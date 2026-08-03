@@ -11,7 +11,7 @@ globalThis.fetch = async (url, opts = {}) => {
   apiCalls.push({ url: String(url), body: opts.body ? JSON.parse(opts.body) : null })
   if (fetchMode === "fail500") return new Response("server error", { status: 500 })
   return new Response(
-    JSON.stringify({ choices: [{ message: { content: `MOCK描述#${apiCalls.length}` } }] }),
+    JSON.stringify({ choices: [{ message: { content: `MOCK-DESC#${apiCalls.length}` } }] }),
     { status: 200, headers: { "content-type": "application/json" } },
   )
 }
@@ -21,6 +21,7 @@ const { default: Plugin } = await import("./vision-bridge.js")
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 const IMG = `data:image/png;base64,${PNG}`
 const DEEPSEEK = { providerID: "deepseek", modelID: "deepseek-v4-flash" }
+const KIMI = { providerID: "kimi-for-coding", modelID: "k3-256k" }
 
 async function mk() {
   const plugin = await Plugin({ client: undefined })
@@ -36,63 +37,68 @@ const imgPart = (sid, url = IMG) => ({ type: "file", mime: "image/png", url, ses
 beforeEach(() => {
   apiCalls = []
   fetchMode = "ok"
+  delete process.env.VISION_ENABLE_MODELS
+  delete process.env.VISION_SKIP_PROVIDERS
 })
 
-test("REQ-1 上传图片自动替换为文字描述，无需手动操作", async () => {
+test("REQ-1 uploaded image is auto-replaced with a description (default: all models)", async () => {
   const { params, transform } = await mk()
   await params({ sessionID: "s1", model: DEEPSEEK })
   const out = { messages: [{ info: { role: "user", sessionID: "s1" }, parts: [
-    { type: "text", text: "这是什么", sessionID: "s1" },
+    { type: "text", text: "what is this", sessionID: "s1" },
     imgPart("s1"),
   ] }] }
   await transform({}, out)
   const p = out.messages[0].parts[1]
   assert.equal(p.type, "text")
-  assert.match(p.text, /^\[图像 1\]\nMOCK描述/)
+  assert.match(p.text, /^\[Image 1\]\nMOCK-DESC/)
   assert.equal(apiCalls.length, 1)
 })
 
-test("REQ-2 截图附件：描述追加到工具输出，图片附件移除，非图片附件保留", async () => {
+test("REQ-2 tool screenshot: description appended to tool output, image attachment removed, non-image kept", async () => {
   const { params, transform } = await mk()
   await params({ sessionID: "s1", model: DEEPSEEK })
   const toolPart = {
     type: "tool",
     state: {
       status: "completed",
-      output: "截图完成",
+      output: "screenshot taken",
       attachments: [imgPart("s1"), { type: "file", mime: "application/pdf", url: "data:application/pdf;base64,JVBERi0=" }],
     },
   }
   const out = { messages: [{ info: { role: "assistant", sessionID: "s1", model: DEEPSEEK }, parts: [toolPart] }] }
   await transform({}, out)
-  assert.match(toolPart.state.output, /截图完成\n\n\[图像 1\]\nMOCK描述/)
+  assert.match(toolPart.state.output, /screenshot taken\n\n\[Image 1\]\nMOCK-DESC/)
   assert.equal(toolPart.state.attachments.length, 1)
   assert.equal(toolPart.state.attachments[0].mime, "application/pdf")
   assert.equal(apiCalls.length, 1)
 })
 
-test("REQ-3 非 deepseek-v4-flash 模型（kimi）：图片原样保留，零 API 调用", async () => {
+test("REQ-3a with VISION_ENABLE_MODELS whitelist: non-listed model (kimi) untouched", async () => {
+  process.env.VISION_ENABLE_MODELS = "deepseek-v4-flash"
   const { params, transform } = await mk()
-  await params({ sessionID: "s2", model: { providerID: "kimi-for-coding", modelID: "k3-256k" } })
+  await params({ sessionID: "s2", model: KIMI })
   const out = { messages: [{ info: { role: "user", sessionID: "s2" }, parts: [imgPart("s2")] }] }
   await transform({}, out)
   assert.equal(out.messages[0].parts[0].type, "file")
   assert.equal(apiCalls.length, 0)
 })
 
-test("REQ-3b 同一 modelID 任意 provider 都生效（OpenCode Go / 任意代理）", async () => {
+test("REQ-3b whitelist bare modelID matches any provider (opencode-go / deepseek / any proxy)", async () => {
+  process.env.VISION_ENABLE_MODELS = "deepseek-v4-flash"
   const { params, transform } = await mk()
   for (const providerID of ["opencode-go", "deepseek", "any-proxy"]) {
     const sid = `prov-${providerID}`
     await params({ sessionID: sid, model: { providerID, modelID: "deepseek-v4-flash" } })
     const out = { messages: [{ info: { role: "user", sessionID: sid }, parts: [imgPart(sid)] }] }
     await transform({}, out)
-    assert.equal(out.messages[0].parts[0].type, "text", `${providerID} 应被处理`)
+    assert.equal(out.messages[0].parts[0].type, "text", `${providerID} should be processed`)
   }
-  assert.equal(apiCalls.length, 1, "同图跨 provider 命中同一缓存")
+  assert.equal(apiCalls.length, 1, "same image across providers hits one cache entry")
 })
 
-test("REQ-3c 同 provider 不同 modelID 不生效（deepseek-v4-pro）", async () => {
+test("REQ-3c whitelist: same provider different modelID untouched (deepseek-v4-pro)", async () => {
+  process.env.VISION_ENABLE_MODELS = "deepseek-v4-flash"
   const { params, transform } = await mk()
   await params({ sessionID: "s2b", model: { providerID: "opencode-go", modelID: "deepseek-v4-pro" } })
   const out = { messages: [{ info: { role: "user", sessionID: "s2b" }, parts: [imgPart("s2b")] }] }
@@ -101,7 +107,32 @@ test("REQ-3c 同 provider 不同 modelID 不生效（deepseek-v4-pro）", async 
   assert.equal(apiCalls.length, 0)
 })
 
-test("REQ-4 第一轮 deepseek 会话（无 assistant 消息）也能识别", async () => {
+test("REQ-3d with VISION_SKIP_PROVIDERS blacklist: listed provider untouched, others processed", async () => {
+  process.env.VISION_SKIP_PROVIDERS = "kimi-for-coding"
+  const { params, transform } = await mk()
+  await params({ sessionID: "s2c", model: KIMI })
+  const out1 = { messages: [{ info: { role: "user", sessionID: "s2c" }, parts: [imgPart("s2c")] }] }
+  await transform({}, out1)
+  assert.equal(out1.messages[0].parts[0].type, "file", "kimi should be skipped")
+
+  await params({ sessionID: "s2d", model: DEEPSEEK })
+  const out2 = { messages: [{ info: { role: "user", sessionID: "s2d" }, parts: [imgPart("s2d")] }] }
+  await transform({}, out2)
+  assert.equal(out2.messages[0].parts[0].type, "text", "deepseek should be processed")
+  assert.equal(apiCalls.length, 1)
+})
+
+test("REQ-3e default (no config): even vision-capable-adjacent models are processed", async () => {
+  const { params, transform } = await mk()
+  await params({ sessionID: "s2e", model: KIMI })
+  const out = { messages: [{ info: { role: "user", sessionID: "s2e" }, parts: [imgPart("s2e")] }] }
+  await transform({}, out)
+  assert.equal(out.messages[0].parts[0].type, "text")
+  assert.equal(apiCalls.length, 1)
+})
+
+test("REQ-4 first-turn session (no assistant message) still identified via chat.params", async () => {
+  process.env.VISION_ENABLE_MODELS = "deepseek-v4-flash"
   const { params, transform } = await mk()
   await params({ sessionID: "s3", model: DEEPSEEK })
   const out = { messages: [{ info: { role: "user", sessionID: "s3" }, parts: [imgPart("s3")] }] }
@@ -110,7 +141,8 @@ test("REQ-4 第一轮 deepseek 会话（无 assistant 消息）也能识别", as
   assert.equal(apiCalls.length, 1)
 })
 
-test("REQ-5 模型完全未知：安全方向不动", async () => {
+test("REQ-5 whitelist + unknown model: stays untouched (strict allowlist)", async () => {
+  process.env.VISION_ENABLE_MODELS = "deepseek-v4-flash"
   const { transform } = await mk()
   const out = { messages: [{ info: { role: "user" }, parts: [imgPart(undefined)] }] }
   await transform({}, out)
@@ -118,78 +150,78 @@ test("REQ-5 模型完全未知：安全方向不动", async () => {
   assert.equal(apiCalls.length, 0)
 })
 
-test("REQ-6 替换文本带原图沙箱路径，且文件真实存在", async () => {
+test("REQ-6 replacement text carries sandbox path of the original image, file exists", async () => {
   const { params, transform } = await mk()
   await params({ sessionID: "s1", model: DEEPSEEK })
   const out = { messages: [{ info: { role: "user", sessionID: "s1" }, parts: [imgPart("s1")] }] }
   await transform({}, out)
   const text = out.messages[0].parts[0].text
-  const m = text.match(/原图：(\S+?) —/)
-  assert.ok(m, "文本中应包含原图路径")
+  const m = text.match(/Original image: (\S+?) —/)
+  assert.ok(m, "text should contain the original image path")
   const st = await stat(m[1])
-  assert.ok(st.isFile() && st.size > 0, "沙箱文件应存在")
+  assert.ok(st.isFile() && st.size > 0, "sandbox file should exist")
 })
 
-test("REQ-7 vision 工具：带具体问题定向查看原图", async () => {
+test("REQ-7 vision tool: re-queries the original image with a specific question", async () => {
   const { params, transform, vision } = await mk()
   await params({ sessionID: "s1", model: DEEPSEEK })
   const out = { messages: [{ info: { role: "user", sessionID: "s1" }, parts: [imgPart("s1")] }] }
   await transform({}, out)
-  const path = out.messages[0].parts[0].text.match(/原图：(\S+?) —/)[1]
+  const path = out.messages[0].parts[0].text.match(/Original image: (\S+?) —/)[1]
 
   const before = apiCalls.length
-  const result = await vision.execute({ path, question: "第3行错误码是什么" }, {})
-  assert.match(String(result), /MOCK描述/)
+  const result = await vision.execute({ path, question: "What is the error code on line 3?" }, {})
+  assert.match(String(result), /MOCK-DESC/)
   assert.equal(apiCalls.length, before + 1)
   const lastReq = apiCalls.at(-1).body
   const promptText = lastReq.messages[0].content.find((c) => c.type === "text").text
-  assert.match(promptText, /第3行错误码是什么/)
+  assert.match(promptText, /What is the error code on line 3\?/)
 })
 
-test("REQ-8 vision 工具：沙箱外路径被拒绝", async () => {
+test("REQ-8 vision tool: rejects paths outside the sandbox", async () => {
   const { vision } = await mk()
   const r1 = await vision.execute({ path: "/etc/passwd", question: "x" }, {})
-  assert.match(String(r1), /错误/)
+  assert.match(String(r1), /Error/)
   const r2 = await vision.execute({ path: join(tmpdir(), "evil.png"), question: "x" }, {})
-  assert.match(String(r2), /错误/)
+  assert.match(String(r2), /Error/)
 })
 
-test("REQ-9 vision 工具：已清理的图返回明确错误", async () => {
+test("REQ-9 vision tool: pruned/missing image returns a clear error", async () => {
   const { vision } = await mk()
   const r = await vision.execute({ path: join(tmpdir(), "opencode-vision-bridge", "not-exist.png"), question: "x" }, {})
-  assert.match(String(r), /不存在|已清理/)
+  assert.match(String(r), /not found|pruned/)
 })
 
-test("Q-1 同一张图多处出现：并发去重 + 跨轮缓存", async () => {
+test("Q-1 same image in multiple places: in-flight dedup + cross-turn cache", async () => {
   const { params, transform } = await mk()
   await params({ sessionID: "s1", model: DEEPSEEK })
   const out = { messages: [{ info: { role: "user", sessionID: "s1" }, parts: [imgPart("s1"), imgPart("s1")] }] }
   await transform({}, out)
-  assert.equal(apiCalls.length, 1, "同图并发只调 1 次")
+  assert.equal(apiCalls.length, 1, "concurrent duplicates share one API call")
 
   const out2 = { messages: [{ info: { role: "user", sessionID: "s1" }, parts: [imgPart("s1")] }] }
   await transform({}, out2)
-  assert.equal(apiCalls.length, 1, "二次 transform 全缓存命中")
+  assert.equal(apiCalls.length, 1, "second transform fully served from cache")
 })
 
-test("Q-2 API 失败：降级占位、不缓存错误、下轮自动重试成功", async () => {
+test("Q-2 API failure: graceful placeholder, error not cached, next turn retries", async () => {
   const { params, transform } = await mk()
   await params({ sessionID: "s1", model: DEEPSEEK })
   fetchMode = "fail500"
   const out1 = { messages: [{ info: { role: "user", sessionID: "s1" }, parts: [imgPart("s1")] }] }
   await transform({}, out1)
-  assert.match(out1.messages[0].parts[0].text, /描述不可用/)
+  assert.match(out1.messages[0].parts[0].text, /description unavailable/)
   assert.ok(apiCalls.length >= 1)
 
   fetchMode = "ok"
   const callsBefore = apiCalls.length
   const out2 = { messages: [{ info: { role: "user", sessionID: "s1" }, parts: [imgPart("s1")] }] }
   await transform({}, out2)
-  assert.match(out2.messages[0].parts[0].text, /MOCK描述/, "错误未被缓存，恢复后重试成功")
+  assert.match(out2.messages[0].parts[0].text, /MOCK-DESC/, "error was not cached; retry succeeded")
   assert.ok(apiCalls.length > callsBefore)
 })
 
-test("Q-3 file:// 本地图片也能处理", async () => {
+test("Q-3 file:// local image is also handled", async () => {
   const dir = await mkdtemp(join(tmpdir(), "vb-test-"))
   const filePath = join(dir, "shot.png")
   await writeFile(filePath, Buffer.from(PNG, "base64"))
@@ -199,11 +231,11 @@ test("Q-3 file:// 本地图片也能处理", async () => {
   await transform({}, out)
   const p = out.messages[0].parts[0]
   assert.equal(p.type, "text")
-  assert.match(p.text, /MOCK描述/)
-  assert.match(p.text, /原图：/)
+  assert.match(p.text, /MOCK-DESC/)
+  assert.match(p.text, /Original image:/)
 })
 
-test("Q-4 多图场景：各自编号替换", async () => {
+test("Q-4 multiple images: numbered and replaced individually", async () => {
   const { params, transform } = await mk()
   await params({ sessionID: "s1", model: DEEPSEEK })
   const PNG2 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
@@ -212,7 +244,7 @@ test("Q-4 多图场景：各自编号替换", async () => {
     imgPart("s1", `data:image/png;base64,${PNG2}`),
   ] }] }
   await transform({}, out)
-  assert.match(out.messages[0].parts[0].text, /^\[图像 1\]/)
-  assert.match(out.messages[0].parts[1].text, /^\[图像 2\]/)
+  assert.match(out.messages[0].parts[0].text, /^\[Image 1\]/)
+  assert.match(out.messages[0].parts[1].text, /^\[Image 2\]/)
   assert.equal(apiCalls.length, 2)
 })

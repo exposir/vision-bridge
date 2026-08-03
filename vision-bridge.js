@@ -6,8 +6,6 @@ import { homedir, tmpdir } from "node:os"
 import { extname, join, resolve, sep } from "node:path"
 import { tool } from "@opencode-ai/plugin"
 
-const DEFAULT_ENABLE_MODELS = ["deepseek-v4-flash"]
-
 const SANDBOX_DIR = join(tmpdir(), "opencode-vision-bridge")
 const SANDBOX_MAX_IMAGES = 100
 
@@ -23,24 +21,13 @@ const EXT_TO_MIME = Object.fromEntries(
   Object.entries(MIME_TO_EXT).map(([mime, ext]) => [ext.slice(1), mime]),
 )
 
-const DEFAULT_SKIP_PROVIDERS = [
-  "anthropic",
-  "openai",
-  "google",
-  "vertex",
-  "bedrock",
-  "xai",
-  "azure",
-  "kimi-for-coding",
-]
-
-const DEFAULT_QUESTION = `用户向 AI 助手提供了这张图片，但助手没有视觉能力。请生成详细的文字描述，使助手能完全理解图片内容。
-要求：
-- 逐字转录图片中的所有可见文字（UI 文本、错误信息、代码、日志等）
-- 描述界面布局、组件结构、颜色、状态
-- 如果是界面截图：说明页面结构、按钮、表单、当前状态
-- 如果是代码/日志：完整转录关键内容
-- 直接输出描述，不要前言和结束语`
+const DEFAULT_QUESTION = `The user provided this image to an AI assistant that has no vision capability. Generate a detailed text description so the assistant can fully understand the image content.
+Requirements:
+- Transcribe ALL visible text verbatim (UI labels, error messages, code, logs)
+- Describe layout, component structure, colors, and states
+- For UI screenshots: explain page structure, buttons, forms, current state
+- For code/logs: transcribe the key content completely
+- Output the description directly, no preamble or closing remarks`
 
 function parseInt_(raw, fallback, min) {
   if (raw === undefined || raw.trim() === "") return fallback
@@ -76,8 +63,8 @@ function buildConfig(env) {
     maxTokens: parseInt_(env.VISION_MAX_TOKENS, 2048, 1),
     maxConcurrency: parseInt_(env.VISION_MAX_CONCURRENCY, 3, 1),
     cacheSize: parseInt_(env.VISION_CACHE_SIZE, 100, 0),
-    skipProviders: parseList(env.VISION_SKIP_PROVIDERS, [...DEFAULT_SKIP_PROVIDERS]),
-    enableModels: parseList(env.VISION_ENABLE_MODELS, [...DEFAULT_ENABLE_MODELS]),
+    skipProviders: parseList(env.VISION_SKIP_PROVIDERS, []),
+    enableModels: parseList(env.VISION_ENABLE_MODELS, []),
     debug: env.VISION_DEBUG === "1",
   }
 }
@@ -272,7 +259,7 @@ async function describeImage(imageUrl, context, cfg, log, overrideQuestion) {
   const question =
     overrideQuestion ||
     (context
-      ? `${cfg.question}\n\n用户随图片发送的消息：${context}`
+      ? `${cfg.question}\n\nThe user's message accompanying the image: ${context}`
       : cfg.question)
 
   const body = {
@@ -450,31 +437,31 @@ const VisionBridgePlugin = async ({ client }) => {
     tool: {
       vision: tool({
         description:
-          "查看一张本地图片的内容。当消息中的图像文字描述不足以回答用户的问题时使用：传入原图路径和针对图片的具体问题，视觉模型会定向查看原图并回答。path 必须是之前消息中以「原图：」标注的路径。",
+          'Inspect a local image with a vision model. Use when the text description of an image in the conversation is not enough to answer the user\'s question: pass the original image path and a specific question, and the vision model will look at the actual image and answer. The path must be one previously provided as "Original image:" in the conversation.',
         args: {
-          path: tool.schema.string().describe("原图文件路径，即消息中「原图：」后标注的沙箱路径"),
-          question: tool.schema.string().describe("针对图片的具体问题，例如「第 3 行的错误码是什么」「按钮上的文字是什么颜色」"),
+          path: tool.schema.string().describe('The original image file path, as previously marked with "Original image:" in the conversation'),
+          question: tool.schema.string().describe('A specific question about the image, e.g. "What is the error code on line 3?" or "What color is the button text?"'),
         },
         async execute(args) {
           const resolved = resolve(String(args.path || ""))
           if (!resolved.startsWith(resolve(SANDBOX_DIR) + sep)) {
-            return "错误：path 必须是消息中「原图：」标注的沙箱路径"
+            return 'Error: path must be a sandbox path previously provided as "Original image:"'
           }
           const ext = extname(resolved).slice(1).toLowerCase()
           const mime = EXT_TO_MIME[ext]
           if (!mime) {
-            return "错误：不支持的文件类型，仅允许图片"
+            return "Error: unsupported file type, images only"
           }
           let buf
           try {
             buf = await readFile(resolved)
           } catch {
-            return "错误：原图不存在或已被清理（沙箱最多保留 100 张），请让用户重新提供图片"
+            return "Error: original image not found or already pruned (sandbox keeps at most 100 images); ask the user to re-provide the image"
           }
           const dataUrl = `data:${mime};base64,${buf.toString("base64")}`
-          const question = `用户在分析一张图片的细节。请聚焦回答以下问题：${args.question}\n要求：逐字转录与问题相关的所有可见文字；回答直接精确；若图中没有与问题相关的内容，明确说明「图中未找到相关信息」。`
+          const question = `The user is analyzing details of an image. Focus on answering this question: ${args.question}\nRequirements: transcribe verbatim all visible text relevant to the question; be direct and precise; if nothing in the image relates to the question, state clearly "No relevant content found in the image".`
           const desc = await describeImage(dataUrl, "", cfg, log, question)
-          return desc ?? "视觉模型暂时不可用，请稍后再试"
+          return desc ?? "Vision model temporarily unavailable, please try again later"
         },
       }),
     },
@@ -489,15 +476,15 @@ const VisionBridgePlugin = async ({ client }) => {
 
         const descriptions = await withConcurrency(
           targets.map((target, idx) => async () => {
-            const label = `[图像 ${idx + 1}]`
+            const label = `[Image ${idx + 1}]`
             let resolved
             try {
               resolved = await resolveImageUrl(target.part)
             } catch (error) {
               await log("error", "failed to resolve image", { error: String(error) })
-              return `${label} 描述不可用`
+              return `${label} description unavailable`
             }
-            if (!resolved.url) return `${label} 描述不可用`
+            if (!resolved.url) return `${label} description unavailable`
 
             const filePath = await saveImageToSandbox(
               resolved.url,
@@ -505,12 +492,12 @@ const VisionBridgePlugin = async ({ client }) => {
               log,
             )
             const hint = filePath
-              ? `\n（原图：${filePath} — 若上述描述未覆盖你需要的细节，可调用 vision 工具：path 传该路径，question 传具体问题，可进一步查看原图）`
+              ? `\n(Original image: ${filePath} — if the description above misses details you need, call the vision tool: pass this path as "path" and your specific question as "question".)`
               : ""
 
             const key = hashKey(resolved.url, resolved.mtimeMs)
             const desc = await describeOnce(key, resolved.url, target.context)
-            if (desc === null) return `${label} 描述不可用${hint}`
+            if (desc === null) return `${label} description unavailable${hint}`
             return `${label}\n${desc}${hint}`
           }),
           cfg.maxConcurrency,
