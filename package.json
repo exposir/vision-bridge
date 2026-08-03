@@ -1,0 +1,17 @@
+{
+  "name": "opencode-vision-bridge",
+  "version": "0.1.0",
+  "description": "OpenCode plugin: gives text-only models (e.g. DeepSeek) image understanding via a vision model — describe-then-replace, with on-demand re-query",
+  "type": "module",
+  "main": "vision-bridge.js",
+  "scripts": {
+    "test": "node --test vision-bridge.test.mjs"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^1.18.11"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.18.11"
+  }
+}
