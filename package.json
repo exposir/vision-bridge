@@ -1,5 +1,5 @@
 {
-  "name": "opencode-vision-bridge",
+  "name": "vision-bridge",
   "version": "0.2.0",
   "description": "Give text-only models (e.g. DeepSeek) image understanding via a vision model — host-agnostic core with OpenCode + pi adapters",
   "type": "module",
