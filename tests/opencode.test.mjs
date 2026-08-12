@@ -3,23 +3,12 @@ import assert from "node:assert/strict"
 import { mkdtemp, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { apiCalls, setFetchMode, resetMocks, mockFetch, IMG, PNG2, PNG } from "./helpers.mjs"
 
-let apiCalls = []
-let fetchMode = "ok"
+mockFetch()
 
-globalThis.fetch = async (url, opts = {}) => {
-  apiCalls.push({ url: String(url), body: opts.body ? JSON.parse(opts.body) : null })
-  if (fetchMode === "fail500") return new Response("server error", { status: 500 })
-  return new Response(
-    JSON.stringify({ choices: [{ message: { content: `MOCK-DESC#${apiCalls.length}` } }] }),
-    { status: 200, headers: { "content-type": "application/json" } },
-  )
-}
+const { default: Plugin } = await import("../src/hooks/opencode.ts")
 
-const { default: Plugin } = await import("./vision-bridge.js")
-
-const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
-const IMG = `data:image/png;base64,${PNG}`
 const DEEPSEEK = { providerID: "deepseek", modelID: "deepseek-v4-flash" }
 const KIMI = { providerID: "kimi-for-coding", modelID: "k3-256k" }
 
@@ -35,8 +24,7 @@ async function mk() {
 const imgPart = (sid, url = IMG) => ({ type: "file", mime: "image/png", url, sessionID: sid })
 
 beforeEach(() => {
-  apiCalls = []
-  fetchMode = "ok"
+  resetMocks()
   delete process.env.VISION_ENABLE_MODELS
   delete process.env.VISION_SKIP_PROVIDERS
 })
@@ -207,13 +195,13 @@ test("Q-1 same image in multiple places: in-flight dedup + cross-turn cache", as
 test("Q-2 API failure: graceful placeholder, error not cached, next turn retries", async () => {
   const { params, transform } = await mk()
   await params({ sessionID: "s1", model: DEEPSEEK })
-  fetchMode = "fail500"
+  setFetchMode("fail500")
   const out1 = { messages: [{ info: { role: "user", sessionID: "s1" }, parts: [imgPart("s1")] }] }
   await transform({}, out1)
   assert.match(out1.messages[0].parts[0].text, /description unavailable/)
   assert.ok(apiCalls.length >= 1)
 
-  fetchMode = "ok"
+  setFetchMode("ok")
   const callsBefore = apiCalls.length
   const out2 = { messages: [{ info: { role: "user", sessionID: "s1" }, parts: [imgPart("s1")] }] }
   await transform({}, out2)
@@ -238,7 +226,6 @@ test("Q-3 file:// local image is also handled", async () => {
 test("Q-4 multiple images: numbered and replaced individually", async () => {
   const { params, transform } = await mk()
   await params({ sessionID: "s1", model: DEEPSEEK })
-  const PNG2 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
   const out = { messages: [{ info: { role: "user", sessionID: "s1" }, parts: [
     imgPart("s1"),
     imgPart("s1", `data:image/png;base64,${PNG2}`),
