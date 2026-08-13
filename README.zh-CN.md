@@ -81,7 +81,14 @@ cp package.json ~/.pi/agent/extensions/vision-bridge/   # 然后在其中 npm in
 - insert:
     - id: vision-bridge
       name: /ABS/PATH/TO/vision-bridge/src/hooks/dsh.ts
+      config:
+        # 可选门控。config 和环境变量都不设置时，所有模型都会被桥接——
+        # 请用下面两者之一把原生多模态模型排除在外：
+        allowlist: [deepseek-v4-flash, deepseek-v4-pro]   # 裸 modelID 或 provider/model
+        # skipProviders: [kimi-code]                       # provider 黑名单
 ```
+
+门控优先级：`VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS` 环境变量设置时优先于 patch 文件的 `config`；两者皆无则桥接所有模型（与 OpenCode / pi 适配器默认一致）。
 
 ```yaml
 # 2. 让网关准入图片。DSH 的 session.prompt 准入会在路由模型未声明
@@ -97,7 +104,7 @@ cp package.json ~/.pi/agent/extensions/vision-bridge/   # 然后在其中 npm in
             input: [text, image]   # 加这一行
 ```
 
-之后粘贴 / 附带的图片会被原地替换为 `[Image N]` 描述；原始字节仍保存在 DSH 的持久化附件存储中，提示语会告知模型可以用注册的 `vision` 工具、凭给出的 `attachment_id` 按需重看原图。嵌套在工具结果里的截图同样被处理，`read_image` 工具产生的图片也会在下一步被描述。环境变量 / `kimi-for-coding` key 与其他适配器一致；`agent.options.provider/model` 驱动同一套 `VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS` 门控。
+之后粘贴 / 附带的图片会被原地替换为 `[Image N]` 描述；原始字节仍保存在 DSH 的持久化附件存储中，提示语会告知模型可以用注册的 `vision` 工具、凭给出的 `attachment_id` 按需重看原图。嵌套在工具结果里的截图同样被处理，`read_image` 工具产生的图片也会在下一步被描述。环境变量 / `kimi-for-coding` key 与其他适配器一致；门控按 `agent.options.provider/model` 匹配，优先级为环境变量（`VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS`）> 插件 `config` > 全量桥接。
 
 ### Grok
 

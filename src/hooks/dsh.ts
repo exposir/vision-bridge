@@ -12,6 +12,14 @@
  *        - insert:
  *            - id: vision-bridge
  *              name: /ABS/PATH/TO/vision-bridge/src/hooks/dsh.ts
+ *              config:
+ *                allowlist: [deepseek-v4-flash, deepseek-v4-pro]  # optional
+ *
+ *      The config block optionally gates which models are bridged
+ *      (`allowlist` bare modelIDs or `provider/model`; `skipProviders`
+ *      provider blacklist). The VISION_ENABLE_MODELS / VISION_SKIP_PROVIDERS
+ *      env vars override it when set; with neither, every model is bridged —
+ *      keep native multimodal models out via one of the two.
  *
  *   2. Admit images at the gateway: DSH's session.prompt admission rejects
  *      image parts when the routed model does not declare image input, before
@@ -45,6 +53,48 @@ import { DEFAULT_REQUERY_QUESTION } from "../core.ts"
 export const name = "vision-bridge"
 /** Wait for the tool registry and the durable attachment store before loading. */
 export const inject = ["tools", "attachments"]
+
+/** Plugin config (cordis.yml `config` block) — env vars win when set. */
+export interface DshConfig {
+  /** Explicit model allowlist (bare modelID or `provider/model`). */
+  allowlist?: string[]
+  /** Provider blacklist, used only when allowlist is empty. */
+  skipProviders?: string[]
+}
+
+/**
+ * Hand-rolled Standard Schema V1 validator for {@link DshConfig}: keeps this
+ * file free of DSH SDK imports while letting the cordis loader validate the
+ * patch-file `config` block before `apply` runs.
+ */
+export const Config = {
+  "~standard": {
+    version: 1,
+    vendor: "vision-bridge",
+    validate(value: unknown): { value: DshConfig } | { issues: { message: string }[] } {
+      const issues: { message: string }[] = []
+      const out: DshConfig = {}
+      if (value !== undefined && value !== null && typeof value !== "object") {
+        return { issues: [{ message: "config must be an object" }] }
+      }
+      const raw = (value ?? {}) as Record<string, unknown>
+      for (const [key, list] of Object.entries(raw)) {
+        if (key !== "allowlist" && key !== "skipProviders") {
+          issues.push({ message: `unknown config key "${key}" (allowed: allowlist, skipProviders)` })
+          continue
+        }
+        if (!Array.isArray(list) || list.some((item) => typeof item !== "string" || item.trim() === "")) {
+          issues.push({ message: `config.${key} must be an array of non-empty strings` })
+          continue
+        }
+        if (key === "allowlist") out.allowlist = list as string[]
+        else out.skipProviders = list as string[]
+      }
+      if (issues.length > 0) return { issues }
+      return { value: out }
+    },
+  },
+}
 
 /** Originals remembered per attachmentId for the re-query tool (process-local). */
 const MAX_REMEMBERED = 200
@@ -149,10 +199,20 @@ async function dataUrlOf(ctx: any, ref: AttachmentRef, signal?: AbortSignal): Pr
   }
 }
 
-export function apply(ctx: any) {
+export function apply(ctx: any, config?: DshConfig) {
   const env = process.env as Record<string, string | undefined>
   const bridge = new VisionBridge(buildConfig(env, openCodeAuthKey))
   const gate = buildModelGate(env)
+  // Plugin config is the fallback gate for deployments that do not control
+  // the launcher environment: VISION_ENABLE_MODELS / VISION_SKIP_PROVIDERS
+  // win when set, otherwise the patch-file `config` block applies.
+  if (gate.enableModels.length === 0 && gate.skipProviders.length === 0 && config) {
+    if (config.allowlist && config.allowlist.length > 0) {
+      gate.enableModels = config.allowlist.map((entry) => entry.toLowerCase())
+    } else if (config.skipProviders && config.skipProviders.length > 0) {
+      gate.skipProviders = config.skipProviders.map((entry) => entry.toLowerCase())
+    }
+  }
 
   const log = (level: "info" | "warn", message: string, extra?: unknown) => {
     try {

@@ -89,7 +89,16 @@ running `dsh` process hot-reloads edits — no restart needed):
 - insert:
     - id: vision-bridge
       name: /ABS/PATH/TO/vision-bridge/src/hooks/dsh.ts
+      config:
+        # Optional gate. Without config or env, EVERY model is bridged —
+        # keep native multimodal models out via one of:
+        allowlist: [deepseek-v4-flash, deepseek-v4-pro]   # bare modelID or provider/model
+        # skipProviders: [kimi-code]                       # provider blacklist
 ```
+
+Gating precedence: the `VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS`
+env vars override the patch-file `config` when set; with neither, every model
+is bridged (same default as the OpenCode / pi adapters).
 
 ```yaml
 # 2. Admit images at the gateway. DSH's session.prompt admission rejects
@@ -114,7 +123,6 @@ handled the same way, and `read_image` tool results are described on the next
 step. Uses the same `VISION_*` env / `kimi-for-coding` key as the other
 adapters. `agent.options.provider/model` drives the same
 `VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS` gate.
-
 ### Grok
 
 Grok Build's TUI has **no** `messages.transform`. A pasted image is saved under

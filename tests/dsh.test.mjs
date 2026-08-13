@@ -261,3 +261,61 @@ test("D-11 images nested inside tool-result blocks (screenshots) are described i
   assert.match(inner[1].text, /Original image: att-nested/)
   assert.equal(apiCalls.length, 1)
 })
+
+test("D-12 plugin config gate: allowlist only bridges the listed models", async () => {
+  const { ctx, handlers, addImage, imgBlock, userMessage } = mkCtx()
+  addImage("att-1", PNG)
+  apply(ctx, { allowlist: ["deepseek-v4-flash"] })
+
+  const pre = handlers["agent/pre-step"]
+  const delegated = { kind: "enter", messages: [] }
+  const next = async () => delegated
+  const img = () => payloadOf([userMessage([imgBlock("att-1")])])
+
+  // Non-listed model (even another DeepSeek) passes through untouched.
+  assert.equal(await pre(img(), next), delegated)
+  // Listed model is processed regardless of provider.
+  const messages = [userMessage([imgBlock("att-1")])]
+  const decision = await pre(payloadOf(messages, agentOf("opencode-go", "deepseek-v4-flash")), async () => ({
+    kind: "enter",
+    messages,
+  }))
+  assert.equal(decision.messages[0].content[0].type, "text")
+  assert.equal(apiCalls.length, 1)
+})
+
+test("D-13 plugin config gate: skipProviders blacklist; env vars win over config", async () => {
+  const { ctx, handlers, addImage, imgBlock, userMessage } = mkCtx()
+  addImage("att-1", PNG)
+  // config says skip kimi-code, but the env allowlist is authoritative.
+  process.env.VISION_ENABLE_MODELS = "deepseek-v4-pro"
+  apply(ctx, { skipProviders: ["kimi-code"] })
+
+  const delegated = { kind: "enter", messages: [] }
+  const next = async () => delegated
+  assert.equal(
+    await handlers["agent/pre-step"](payloadOf([userMessage([imgBlock("att-1")])], agentOf("kimi-code", "k3-256k")), next),
+    delegated,
+    "env allowlist excludes kimi",
+  )
+  const messages = [userMessage([imgBlock("att-1")])]
+  const decision = await handlers["agent/pre-step"](payloadOf(messages), async () => ({
+    kind: "enter",
+    messages,
+  }))
+  assert.equal(decision.messages[0].content[0].type, "text", "env allowlist admits deepseek-v4-pro")
+  assert.equal(apiCalls.length, 1)
+})
+
+test("D-14 Config validator: Standard Schema contract, unknown keys and bad shapes fail loud", async () => {
+  const { Config } = await import("../src/hooks/dsh.ts")
+  const v = Config["~standard"].validate
+  assert.deepEqual(v({ allowlist: ["deepseek-v4-flash"], skipProviders: ["grok"] }).value, {
+    allowlist: ["deepseek-v4-flash"],
+    skipProviders: ["grok"],
+  })
+  assert.deepEqual(v(undefined).value, {})
+  assert.ok(v({ allowlist: [42] }).issues.length > 0)
+  assert.ok(v({ nope: true }).issues.length > 0)
+  assert.ok(v("not-an-object").issues.length > 0)
+})
