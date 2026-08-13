@@ -10,22 +10,24 @@
 你粘贴 / 截图一张图片
         │
         ▼
-宿主适配器 (opencode / pi)
-        │  ① fast path：视觉模型描述图片，
-        │     图片被原地替换为文字
-        │  ② (opencode) 原图保存到本地沙箱，
-        │     替换文本携带其路径
+宿主适配器
+        │  OpenCode / pi（fast path）：
+        │    视觉模型描述图片，图片被原地替换为文字
+        │  Grok（无法拦截）：
+        │    宿主保留像素 + `<image_files>` 路径；
+        │    模型必须调用 CLI 才能拿到描述
         ▼
-聊天模型（如 DeepSeek）收到纯文本并回答
+聊天模型（如 DeepSeek）根据文字作答
         │  如果描述缺少它需要的细节
         │  （"第 3 行的错误码是什么？"）
         ▼
-聊天模型自行调用 re-query 工具 →
+re-query（OpenCode `vision` / pi `view_image` / Grok CLI）→
 视觉模型带着那个具体问题重新审视原图
 ```
 
-- **Fast path**：一次性摘要，覆盖"这是什么图"场景，零额外往返
-- **Re-query path**：原图始终可用，模型按需提出针对性问题，迭代逼近无损
+- **Fast path**（OpenCode / pi）：一次性摘要，零额外往返
+- **Re-query path**：原图始终可用，模型按需提出针对性问题
+- **Grok**：只有 CLI + skill —— 见 [Grok](#grok)
 
 ## 目录结构
 
@@ -35,7 +37,8 @@ src/
 │                        #   in-flight 去重、并发（零宿主 import）
 ├── hooks/
 │   ├── opencode.ts      # OpenCode 适配器（messages.transform + vision 工具）
-│   └── pi.ts            # pi 适配器（input 事件 + view_image 工具）
+│   ├── pi.ts            # pi 适配器（input 事件 + view_image 工具）
+│   └── grok.ts          # Grok 适配器（CLI 按需重看；不要装成 hook）
 └── index.ts             # 汇总导出
 dist/
 ├── opencode-plugin.js   # 构建产物：OpenCode 单文件插件（npm run build）
@@ -66,6 +69,51 @@ cp package.json ~/.pi/agent/extensions/vision-bridge/   # 然后在其中 npm in
 
 之后在 pi 里执行 `/reload`。除粘贴的图片外，pi 适配器还会自动识别输入文本中的图片**文件路径**（如 `pi-clipboard-*.png`）并描述它们。
 
+### Grok
+
+Grok Build TUI **没有** `messages.transform`。粘贴的图片会存到会话 `assets/` 目录，并在文本里标成 `<image_files>` 路径；像素仍会作为 `image_url` 发给聊天模型。纯文本模型（DeepSeek）会忽略或直接拒绝这些 part。
+
+Grok 源码里其实已有官方转述管线（`xai-grok-shell` 的 `transcribe_user_images`，模型来自 `[models] image_description`，默认 `grok-build`）。但它只在 `is_cursor_harness()` 为 true 时运行，而当前 TUI 构建里这个函数写死为 `false`，所以这条管线不会走。
+
+因此本适配器**不会**拦截或替换图片，只提供一个模型可以调用的 CLI，并且**只对 DeepSeek 系列聊天模型生效**（model id 含 `deepseek`）。Grok / GPT 等其他模型会直接跳过。`VISION_ENABLE_MODELS` 可覆盖这个默认白名单。
+
+**不要**把 `grok.ts` 注册成 `UserPromptSubmit` / `PostToolUse` hook：Grok 会丢掉 hook 的 stdout（不消费 `additionalContext`），hook 只会白烧视觉 API。
+
+**安装 skill**（让模型在回答前先转述）：
+
+````bash
+mkdir -p ~/.grok/skills/vision-bridge
+cat > ~/.grok/skills/vision-bridge/SKILL.md <<'EOF'
+---
+name: vision-bridge
+description: >
+  DeepSeek-only image describe. Invoke ONLY when the active chat model id
+  contains "deepseek" AND the user pasted an image, the prompt has
+  <image_files> paths, or chrome-devtools returned a screenshot.
+  Never use on grok, gpt, claude, or other multimodal models.
+---
+
+你看不见图片。如果还没有文字描述，或描述缺了你需要的细节，回答前先执行：
+
+    node --experimental-strip-types /ABS/PATH/TO/vision-bridge/src/hooks/grok.ts <绝对路径> [具体问题]
+
+路径来自 `<image_files>`、用户给出的文件路径，或 chrome-devtools 截图路径。省略问题则生成完整描述。
+EOF
+````
+
+把 `/ABS/PATH/TO/vision-bridge` 换成本仓库路径。重启 Grok（或等 skill 热加载）。
+
+**按需重看 CLI：**
+
+```bash
+node --experimental-strip-types src/hooks/grok.ts <绝对路径>           # 完整描述
+node --experimental-strip-types src/hooks/grok.ts <绝对路径> "第 3 行的错误码是什么？"
+```
+
+环境变量 / OpenCode `kimi-for-coding` key 与其他适配器相同。CLI 按 `GROK_SESSION_ID` / `summary.json`，再回落到 `~/.grok/config.toml` 的 `[models].default` 判断当前模型。描述缓存在 `$TMPDIR/grok-vision-bridge-cache/`。
+
+若要 OpenCode/pi 那种「贴图自动转成文字」，需要改 Grok 源码（对非视觉聊天模型走 `transcribe_user_images`），不是改本仓库。
+
 ### 配置（环境变量，全部可选）
 
 | 变量 | 默认值 | 说明 |
@@ -90,12 +138,14 @@ export VISION_ENABLE_MODELS="deepseek-v4-flash"
 
 ## 编写新适配器
 
-适配器大约 100 行。需要做到：
+能改写消息的宿主（OpenCode、pi）大约 100 行：
 
 1. **收集**宿主消息格式中的 `ImageSource[]`（`{ dataUrl, context }`）
 2. 调用 `bridge.describeAll(sources, hintFor?)` —— 缓存/去重/并发已处理
 3. **写回**返回的 `[Image N]` 文本块到宿主消息格式
 4. （可选）注册一个 re-query 工具，内部调用 `describeImage(dataUrl, question, cfg)`
+
+不能改写出站请求的宿主（当前 Grok TUI）做不了 fast path。提供 CLI + 告诉模型去调用它的 skill 即可；除非宿主真的会读 hook stdout，否则不要把生命周期 hook 当成上下文注入通道。
 
 ## 测试
 
@@ -104,7 +154,7 @@ npm install
 npm test
 ```
 
-35 个用例，覆盖核心 / OpenCode 适配器 / pi 适配器：图片替换、工具截图附件、白名单/黑名单/默认门控、provider 无关的 modelID 匹配、首轮模型识别、未知模型安全、沙箱、re-query 工具、缓存/去重/重试、多图、`file://` 图片、输入路径检测。所有 API 调用均为 mock——整套测试一秒内跑完。
+用例覆盖核心 / OpenCode / pi / Grok 门控：图片替换、工具截图附件、白名单/黑名单/默认门控、provider 无关的 modelID 匹配、首轮模型识别、未知模型安全、沙箱、re-query 工具、缓存/去重/重试、多图、`file://` 图片、输入路径检测、Grok DeepSeek-only 门控。所有 API 调用均为 mock——整套测试一秒内跑完。
 
 ## 实现说明
 
@@ -113,6 +163,7 @@ npm test
 - MCP 工具返回的图片位于工具 part 的 `state.attachments`，走同一套转换管线
 - 核心按内容哈希缓存，跨 provider、跨轮次的相同图片只产生一次视觉调用
 - 当聊天模型本身支持图片时，通过配置 `VISION_SKIP_PROVIDERS` 或收窄 `VISION_ENABLE_MODELS` 保持原样
+- Grok TUI：`UserPromptSubmit` 的 payload 只有 `{ prompt }`；hook stdout 仅在阻塞的 `PreToolUse` 上解析 `{ decision, reason }`。`is_cursor_harness()` 为 `false`，官方 `transcribe_user_images` 不会运行。MCP / chrome-devtools 截图和粘贴图片一样，会以内联 `image_url` 发给模型。
 
 ## License
 
