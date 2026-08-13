@@ -169,16 +169,6 @@ function collectHits(blocks: any[], base: number[] = []): Hit[] {
   return hits
 }
 
-function blockAtPath(blocks: any[], path: number[]): any {
-  let current = blocks
-  let block: any = undefined
-  for (const index of path) {
-    block = current[index]
-    current = block?.content
-  }
-  return block
-}
-
 /** Clone the content array, replacing hit paths (keyed `0,1,2`) with text blocks. */
 function applyReplacements(
   blocks: any[],
@@ -263,6 +253,14 @@ export function apply(ctx: any, config?: DshConfig) {
     }
     if (hitsPerMessage.size === 0) return next()
 
+    // `delegate` runs the downstream waterfall exactly once. A throw from a
+    // downstream listener must propagate — never re-run next() from the catch.
+    let delegated = false
+    const delegate = async (): Promise<any> => {
+      delegated = true
+      return next()
+    }
+
     try {
       const allHits: { hit: Hit; context: string }[] = []
       for (const [message, hits] of hitsPerMessage) {
@@ -277,9 +275,13 @@ export function apply(ctx: any, config?: DshConfig) {
         sources.push({ dataUrl, context })
       }
 
-      const results = await bridge.describeAll(sources, (_source, i) => {
-        return `(Original image: ${allHits[i].hit.ref.attachmentId} — if the description above misses details you need, call the vision tool with this attachment_id and your specific question.)`
-      })
+      const results = await bridge.describeAll(
+        sources,
+        (_source, i) => {
+          return `(Original image: ${allHits[i].hit.ref.attachmentId} — if the description above misses details you need, call the vision tool with this attachment_id and your specific question.)`
+        },
+        payload?.signal,
+      )
 
       // Rewrite: clone each affected message, image blocks replaced by text.
       const rewritten = new Map<UserMessage, UserMessage>()
@@ -302,14 +304,16 @@ export function apply(ctx: any, config?: DshConfig) {
 
       // Delegate so later listeners may still reject/rewrite, then fold our
       // rewrite onto the downstream decision.
-      const downstream = await next()
+      const downstream = await delegate()
       if (downstream?.kind !== "enter") return downstream
       return {
         kind: "enter",
         messages: downstream.messages.map((message: any) => rewritten.get(message) ?? message),
       }
     } catch (error) {
-      // Fail open: a bridge failure must never block the turn.
+      // Fail open: a bridge failure must never block the turn. A downstream
+      // listener failure already ran next() — propagate it untouched.
+      if (delegated) throw error
       log("warn", "pre-step rewrite failed, images left untouched", String(error))
       return next()
     }
@@ -353,7 +357,12 @@ export function apply(ctx: any, config?: DshConfig) {
       }
       const dataUrl = await dataUrlOf(ctx, ref, exec?.signal)
       if (!dataUrl) return "Error: the original image is no longer available; ask the user to re-provide the image"
-      const desc = await describeImage(dataUrl, DEFAULT_REQUERY_QUESTION(question), bridge.config)
+      const desc = await describeImage(
+        dataUrl,
+        DEFAULT_REQUERY_QUESTION(question),
+        bridge.config,
+        exec?.signal,
+      )
       return desc ?? "Vision model temporarily unavailable, please try again later"
     },
   })

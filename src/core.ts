@@ -152,6 +152,7 @@ export async function describeImage(
   imageUrl: string,
   question: string,
   cfg: BridgeConfig,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   if (!cfg.baseUrl || !cfg.apiKey) return null
 
@@ -171,6 +172,8 @@ export async function describeImage(
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const controller = new AbortController()
+    const onExternalAbort = () => controller.abort()
+    signal?.addEventListener("abort", onExternalAbort, { once: true })
     const timer = setTimeout(() => controller.abort(), cfg.timeoutMs)
     try {
       const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
@@ -182,9 +185,8 @@ export async function describeImage(
         body: JSON.stringify(body),
         signal: controller.signal,
       })
-      clearTimeout(timer)
 
-      if (res.status >= 500 && attempt === 0) continue
+      if (res.status >= 500 && attempt === 0 && !signal?.aborted) continue
       if (!res.ok) {
         const text = await res.text().catch(() => "")
         console.error(`[vision-bridge] request failed: ${res.status} ${text.slice(0, 300)}`)
@@ -197,11 +199,14 @@ export async function describeImage(
       if (typeof content === "string" && content.trim()) return content.trim()
       break
     } catch (error) {
-      clearTimeout(timer)
       const isAbort = error instanceof Error && error.name === "AbortError"
-      if (isAbort && attempt === 0) continue
+      // Never retry after the caller cancelled — only retry our own timeout.
+      if (isAbort && attempt === 0 && !signal?.aborted) continue
       console.error(`[vision-bridge] call error: ${String(error)}`)
       break
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", onExternalAbort)
     }
   }
   return null
@@ -301,14 +306,14 @@ export class VisionBridge {
   }
 
   /** Describe one image with an explicit question. Cached by content hash + question. */
-  describeOne(dataUrl: string, question: string): Promise<string | null> {
+  describeOne(dataUrl: string, question: string, signal?: AbortSignal): Promise<string | null> {
     if (!dataUrl) return Promise.resolve(null)
     const key = describeKey(dataUrl, question)
     const cached = this.cache.get(key)
     if (cached !== undefined) return Promise.resolve(cached)
     let promise = this.inflight.get(key)
     if (!promise) {
-      promise = describeImage(dataUrl, question, this.config)
+      promise = describeImage(dataUrl, question, this.config, signal)
         .then((desc) => {
           this.inflight.delete(key)
           if (desc !== null) this.cache.set(key, desc)
@@ -326,11 +331,12 @@ export class VisionBridge {
   /**
    * Describe many images concurrently, producing labeled result blocks.
    * `hintFor` lets the host append per-image extra info (e.g. a sandbox path
-   * the model can re-query later).
+   * the model can re-query later). `signal` cancels in-flight vision calls.
    */
   async describeAll(
     sources: ImageSource[],
     hintFor?: (source: ImageSource, index: number) => string | undefined,
+    signal?: AbortSignal,
   ): Promise<DescribeResult[]> {
     if (sources.length === 0) return []
     const withHint = (index: number) => {
@@ -343,7 +349,7 @@ export class VisionBridge {
         const question = s.context
           ? `${this.config.question}\n\nThe user's message accompanying the image: ${s.context}`
           : this.config.question
-        const desc = await this.describeOne(s.dataUrl, question)
+        const desc = await this.describeOne(s.dataUrl, question, signal)
         if (desc === null) return { label, text: `${label} description unavailable`, hint: withHint(i) }
         return { label, text: `${label}\n${desc}`, hint: withHint(i) }
       }),

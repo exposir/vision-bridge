@@ -351,3 +351,18 @@ test("D-15 gating follows model switches: session request-header config wins ove
   assert.equal(decision.messages[0].content[0].type, "text")
   assert.equal(apiCalls.length, 1)
 })
+
+test("D-16 downstream listener failure propagates and next() runs exactly once", async () => {
+  const { ctx, handlers, addImage, imgBlock, userMessage } = mkCtx()
+  addImage("att-1", PNG)
+  apply(ctx)
+
+  const messages = [userMessage([imgBlock("att-1")])]
+  let calls = 0
+  const next = async () => {
+    calls++
+    throw new Error("downstream boom")
+  }
+  await assert.rejects(handlers["agent/pre-step"](payloadOf(messages), next), /downstream boom/)
+  assert.equal(calls, 1, "next() must not be re-invoked after a downstream throw")
+})
