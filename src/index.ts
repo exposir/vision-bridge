@@ -10,8 +10,23 @@
  * Build a single-file OpenCode plugin with: npm run build
  * The pi adapter is used directly from source (pi loads TS natively).
  */
-export { VisionBridge, buildConfig, describeImage, hashKey, openCodeAuthKey, withConcurrency, LRUCache, EXT_TO_MIME, DEFAULT_QUESTION, DEFAULT_REQUERY_QUESTION } from "./core.ts"
-export type { BridgeConfig, ImageSource, DescribeResult, KeyProvider } from "./core.ts"
+export {
+  VisionBridge,
+  buildConfig,
+  buildModelGate,
+  describeImage,
+  gateAllows,
+  hashKey,
+  modelMatches,
+  openCodeAuthKey,
+  parseModelList,
+  withConcurrency,
+  LRUCache,
+  EXT_TO_MIME,
+  DEFAULT_QUESTION,
+  DEFAULT_REQUERY_QUESTION,
+} from "./core.ts"
+export type { BridgeConfig, ImageSource, DescribeResult, KeyProvider, ModelGate } from "./core.ts"
 export { default as opencodePlugin } from "./hooks/opencode.ts"
 export { default as piExtension } from "./hooks/pi.ts"
 export {

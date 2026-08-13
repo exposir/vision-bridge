@@ -4,7 +4,7 @@ import { apiCalls, setFetchMode, resetMocks, mockFetch, IMG, PNG2 } from "./help
 
 mockFetch()
 
-const { VisionBridge, buildConfig, describeImage, LRUCache, withConcurrency } = await import("../src/core.ts")
+const { VisionBridge, buildConfig, describeImage, LRUCache, withConcurrency, buildModelGate, gateAllows, modelMatches } = await import("../src/core.ts")
 
 function cfg(overrides = {}) {
   return buildConfig(
@@ -111,4 +111,40 @@ test("C-10 withConcurrency respects limit and preserves order", async () => {
   const results = await withConcurrency(tasks, 2)
   assert.deepEqual(results, [10, 20, 30, 40, 50])
   assert.equal(order.length, 5)
+})
+
+test("C-11 same image with a different question is a separate cache entry", async () => {
+  const bridge = new VisionBridge(cfg())
+  assert.equal(await bridge.describeOne(IMG, "full description please"), "MOCK-DESC#1")
+  assert.equal(await bridge.describeOne(IMG, "what is the error code?"), "MOCK-DESC#2")
+  assert.equal(apiCalls.length, 2, "a re-query question must not be served the cached full description")
+  assert.match(apiCalls[1].body.messages[0].content[1].text, /what is the error code\?/)
+  // Same question again still hits the cache.
+  assert.equal(await bridge.describeOne(IMG, "what is the error code?"), "MOCK-DESC#2")
+  assert.equal(apiCalls.length, 2)
+})
+
+test("C-12 model gate: default processes all, allowlist restricts, blacklist skips providers", () => {
+  const def = buildModelGate({})
+  assert.equal(gateAllows(def, "deepseek/deepseek-v4-pro"), true)
+  assert.equal(gateAllows(def, "grok/grok-4.6"), true)
+  assert.equal(gateAllows(def, undefined), true)
+
+  const allow = buildModelGate({ VISION_ENABLE_MODELS: "deepseek-v4-flash" })
+  assert.equal(gateAllows(allow, "deepseek/deepseek-v4-flash"), true)
+  assert.equal(gateAllows(allow, "any-proxy/deepseek-v4-flash"), true)
+  assert.equal(gateAllows(allow, "deepseek/deepseek-v4-pro"), false)
+  assert.equal(gateAllows(allow, undefined), false, "strict allowlist: unknown model stays untouched")
+
+  const skip = buildModelGate({ VISION_SKIP_PROVIDERS: "grok,anthropic" })
+  assert.equal(gateAllows(skip, "grok/grok-4.6"), false)
+  assert.equal(gateAllows(skip, "deepseek/deepseek-v4-pro"), true)
+  assert.equal(gateAllows(skip, undefined), true, "no blacklist entry for unknown model: process")
+})
+
+test("C-13 modelMatches: provider/model exact, bare modelID matches any provider", () => {
+  assert.equal(modelMatches("deepseek-v4-pro", "opencode-go/deepseek-v4-pro"), true)
+  assert.equal(modelMatches("opencode-go/deepseek-v4-pro", "opencode-go/deepseek-v4-pro"), true)
+  assert.equal(modelMatches("opencode-go/deepseek-v4-pro", "deepseek-v4-pro"), false)
+  assert.equal(modelMatches("deepseek-v4-pro", undefined), false)
 })

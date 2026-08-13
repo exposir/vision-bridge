@@ -10,7 +10,14 @@
  * inside the input text (e.g. pi clipboard files) and describes them.
  */
 import { existsSync, readFileSync } from "node:fs"
-import { VisionBridge, buildConfig, describeImage, openCodeAuthKey } from "../core.ts"
+import {
+  VisionBridge,
+  buildConfig,
+  buildModelGate,
+  describeImage,
+  gateAllows,
+  openCodeAuthKey,
+} from "../core.ts"
 import { DEFAULT_REQUERY_QUESTION } from "../core.ts"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "@sinclair/typebox"
@@ -37,9 +44,25 @@ function extractImagePaths(text: string): string[] {
 export default function (pi: ExtensionAPI) {
   const env = process.env as Record<string, string | undefined>
   const bridge = new VisionBridge(buildConfig(env, openCodeAuthKey))
+  const gate = buildModelGate(env)
+
+  // The `input` event carries no model info, so remember the active model from
+  // pi's `model_select` event and apply the same gate as the OpenCode adapter.
+  // Unknown model (no select event yet) keeps the OpenCode default-on behavior:
+  // without an allowlist it processes, with one it passes through.
+  let currentModelId: string | undefined
+  pi.on("model_select", (event: any) => {
+    const m = event?.model
+    const id = typeof m?.id === "string" && m.id ? m.id : undefined
+    if (!id) return
+    const provider = typeof m?.provider === "string" ? m.provider : undefined
+    currentModelId = provider ? `${provider.toLowerCase()}/${id.toLowerCase()}` : id.toLowerCase()
+  })
 
   // ── fast path: intercept images on user input ────────────────────────────
   pi.on("input", async (event) => {
+    if (!gateAllows(gate, currentModelId)) return { action: "continue" }
+
     const attached = event.images ?? []
     const textPaths = extractImagePaths(event.text)
 

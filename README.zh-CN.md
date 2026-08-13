@@ -67,7 +67,7 @@ cp dist/pi-extension/index.ts ~/.pi/agent/extensions/vision-bridge/
 cp package.json ~/.pi/agent/extensions/vision-bridge/   # 然后在其中 npm install
 ```
 
-之后在 pi 里执行 `/reload`。除粘贴的图片外，pi 适配器还会自动识别输入文本中的图片**文件路径**（如 `pi-clipboard-*.png`）并描述它们。
+之后在 pi 里执行 `/reload`。除粘贴的图片外，pi 适配器还会自动识别输入文本中的图片**文件路径**（如 `pi-clipboard-*.png`）并描述它们。模型门控与 OpenCode 一致（`VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS`）：当前模型通过 pi 的 `model_select` 事件跟踪。
 
 ### Grok
 
@@ -110,7 +110,7 @@ node --experimental-strip-types src/hooks/grok.ts <绝对路径>           # 完
 node --experimental-strip-types src/hooks/grok.ts <绝对路径> "第 3 行的错误码是什么？"
 ```
 
-环境变量 / OpenCode `kimi-for-coding` key 与其他适配器相同。CLI 按 `GROK_SESSION_ID` / `summary.json`，再回落到 `~/.grok/config.toml` 的 `[models].default` 判断当前模型。描述缓存在 `$TMPDIR/grok-vision-bridge-cache/`。
+环境变量 / OpenCode `kimi-for-coding` key 与其他适配器相同。CLI 按 `GROK_SESSION_ID` / `summary.json`，再回落到 `~/.grok/config.toml` 的 `[models].default` 判断当前模型。描述缓存在 `$TMPDIR/grok-vision-bridge-cache/`，key 由文件标识 + 问题共同决定。
 
 若要 OpenCode/pi 那种「贴图自动转成文字」，需要改 Grok 源码（对非视觉聊天模型走 `transcribe_user_images`），不是改本仓库。
 
@@ -122,8 +122,8 @@ node --experimental-strip-types src/hooks/grok.ts <绝对路径> "第 3 行的�
 | `VISION_MODEL` | `k3-256k` | 视觉模型 id |
 | `VISION_API_KEY` | `~/.local/share/opencode/auth.json` 中 `kimi-for-coding` 的 key | 显式覆盖 |
 | `VISION_QUESTION` | 内置英文提示词 | 图片描述使用的提示词 |
-| `VISION_ENABLE_MODELS` | _(空 = 所有模型)_ | 逗号分隔白名单。含 `/` 的条目精确匹配 `provider/model`；裸条目按 modelID 匹配、不限 provider |
-| `VISION_SKIP_PROVIDERS` | _(空 = 不跳过)_ | 逗号分隔 provider 黑名单，仅在白名单为空时生效 |
+| `VISION_ENABLE_MODELS` | _(空 = 所有模型)_ | 逗号分隔白名单（OpenCode / pi；Grok 中会替换默认的 DeepSeek-only 白名单）。含 `/` 的条目精确匹配 `provider/model`；裸条目按 modelID 匹配、不限 provider |
+| `VISION_SKIP_PROVIDERS` | _(空 = 不跳过)_ | 逗号分隔 provider 黑名单（OpenCode / pi），仅在白名单为空时生效 |
 | `VISION_TIMEOUT_MS` | `120000` | 单次请求超时（5xx/超时重试一次） |
 | `VISION_MAX_TOKENS` | `2048` | 描述的最大 token 数 |
 | `VISION_MAX_CONCURRENCY` | `3` | 最大并行视觉调用数 |
@@ -161,7 +161,7 @@ npm test
 - OpenCode 消息中的图片是 `FilePart`（`type: "file"`，`mime: "image/*"`），没有专门的图片 part 类型
 - `experimental.chat.messages.transform` 每次请求都收到**完整历史的深拷贝**——缓存是硬性需求
 - MCP 工具返回的图片位于工具 part 的 `state.attachments`，走同一套转换管线
-- 核心按内容哈希缓存，跨 provider、跨轮次的相同图片只产生一次视觉调用
+- 核心按内容哈希 **+ 问题**缓存——同一图片配同一问题，跨 provider、跨轮次只产生一次视觉调用；带不同问题的 re-query 绝不会命中旧的全量描述
 - 当聊天模型本身支持图片时，通过配置 `VISION_SKIP_PROVIDERS` 或收窄 `VISION_ENABLE_MODELS` 保持原样
 - Grok TUI：`UserPromptSubmit` 的 payload 只有 `{ prompt }`；hook stdout 仅在阻塞的 `PreToolUse` 上解析 `{ decision, reason }`。`is_cursor_harness()` 为 `false`，官方 `transcribe_user_images` 不会运行。MCP / chrome-devtools 截图和粘贴图片一样，会以内联 `image_url` 发给模型。
 

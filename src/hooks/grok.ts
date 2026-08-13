@@ -7,12 +7,12 @@
  *   node --experimental-strip-types src/hooks/grok.ts <path> [question]
  *
  * Default gate: model id contains "deepseek". Override with VISION_ENABLE_MODELS.
- * Cache lives on disk (each process is a fresh spawn).
+ * Cache lives on disk (each process is a fresh spawn), keyed by file identity + question.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import {
   DEFAULT_REQUERY_QUESTION,
   EXT_TO_MIME,
@@ -95,17 +95,19 @@ function cacheSet(key: string, value: string): void {
   } catch {}
 }
 
-function fileCacheKey(path: string): string | null {
+function fileCacheKey(path: string, question: string): string | null {
   try {
     const st = statSync(path)
-    return hashKey(`${path}:${st.size}:${st.mtimeMs}`)
+    // Question is part of the key: a targeted re-query must never be served
+    // the cached full description of the same file.
+    return hashKey(`${path}:${st.size}:${st.mtimeMs}:${question}`)
   } catch {
     return null
   }
 }
 
-async function describePath(path: string, question: string, cfg: ReturnType<typeof buildConfig>): Promise<string | null> {
-  const key = fileCacheKey(path)
+export async function describePath(path: string, question: string, cfg: ReturnType<typeof buildConfig>): Promise<string | null> {
+  const key = fileCacheKey(path, question)
   if (key) {
     const hit = cacheGet(key)
     if (hit) return hit
@@ -228,9 +230,14 @@ async function handleCli(path: string, question: string): Promise<void> {
   process.stdout.write((desc ?? "Vision model temporarily unavailable, please try again later") + "\n")
 }
 
-const cliPath = process.argv[2]
-if (cliPath && cliPath !== "-" && !cliPath.startsWith("{")) {
-  await handleCli(cliPath, process.argv.slice(3).join(" "))
-} else {
-  await handleHook()
+// CLI vs. hook mode, dispatched only when this file is the main module —
+// importing grok.ts (e.g. from tests or another adapter) has no side effects.
+const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
+if (isMain) {
+  const cliPath = process.argv[2]
+  if (cliPath && cliPath !== "-" && !cliPath.startsWith("{")) {
+    await handleCli(cliPath, process.argv.slice(3).join(" "))
+  } else {
+    await handleHook()
+  }
 }

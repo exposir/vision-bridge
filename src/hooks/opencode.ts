@@ -15,7 +15,9 @@ import {
   EXT_TO_MIME,
   VisionBridge,
   buildConfig,
+  buildModelGate,
   describeImage,
+  gateAllows,
   hashKey,
   openCodeAuthKey,
 } from "../core.ts"
@@ -61,36 +63,6 @@ function extractActiveModel(messages: any[]): { provider?: string; modelId?: str
     }
   }
   return { provider: undefined, modelId: undefined }
-}
-
-function modelMatches(entry: string, modelId?: string): boolean {
-  if (!modelId) return false
-  if (entry.includes("/")) return entry === modelId
-  return modelId.split("/")[1] === entry
-}
-
-interface GateConfig {
-  skipProviders: string[]
-  enableModels: string[]
-}
-
-function parseList(raw: string | undefined, fallback: string[]): string[] {
-  if (raw === undefined) return fallback
-  if (raw.trim().toLowerCase() === "none") return []
-  return raw
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean)
-}
-
-function shouldProcess(sessionModelId: string | undefined, messages: any[], gate: GateConfig): boolean {
-  const modelId = sessionModelId || extractActiveModel(messages).modelId
-  if (gate.enableModels.length > 0) {
-    return gate.enableModels.some((entry) => modelMatches(entry, modelId))
-  }
-  const provider = modelId?.split("/")[0] || extractActiveModel(messages).provider
-  if (!provider) return true
-  return !gate.skipProviders.includes(provider)
 }
 
 // --- sandbox: where re-queryable originals are kept ------------------------
@@ -242,10 +214,7 @@ function makeLogger(client: any, debug: boolean) {
 
 const VisionBridgePlugin = async ({ client }: { client?: any }) => {
   const env = process.env as Record<string, string | undefined>
-  const gate: GateConfig = {
-    skipProviders: parseList(env.VISION_SKIP_PROVIDERS, []),
-    enableModels: parseList(env.VISION_ENABLE_MODELS, []),
-  }
+  const gate = buildModelGate(env)
   const bridge = new VisionBridge(buildConfig(env, openCodeAuthKey))
   const log = makeLogger(client, bridge.config.debug)
 
@@ -338,7 +307,7 @@ const VisionBridgePlugin = async ({ client }: { client?: any }) => {
       if (!Array.isArray(messages)) return
       try {
         const sessionModelId = sessionModels.get(sessionIdOf(messages) ?? "")
-        if (!shouldProcess(sessionModelId, messages, gate)) return
+        if (!gateAllows(gate, sessionModelId || extractActiveModel(messages).modelId)) return
         const targets = collectTargets(messages)
         if (targets.length === 0) return
 

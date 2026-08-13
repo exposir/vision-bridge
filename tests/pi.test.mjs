@@ -22,7 +22,12 @@ function mkPi() {
     },
   }
   PiExtension(api)
-  return { input: handlers.input, viewImage: tools.find((t) => t.name === "view_image"), tools }
+  return {
+    input: handlers.input,
+    modelSelect: handlers.model_select,
+    viewImage: tools.find((t) => t.name === "view_image"),
+    tools,
+  }
 }
 
 beforeEach(() => {
@@ -122,4 +127,40 @@ test("P-8 failure: transform still succeeds with graceful placeholder, no throw"
   )
   assert.equal(result.action, "transform")
   assert.match(result.text, /description unavailable/)
+})
+
+const withImage = () => ({
+  text: "图",
+  images: [{ type: "image", data: PNG, mimeType: "image/png" }],
+  source: "interactive",
+})
+
+test("P-9 allowlist gate: model_select tracks the active model; non-listed models pass through", async () => {
+  process.env.VISION_ENABLE_MODELS = "deepseek-v4-flash"
+  const { input, modelSelect } = mkPi()
+
+  modelSelect({ model: { id: "grok-4.6", provider: "grok" } })
+  const skipped = await input(withImage(), {})
+  assert.deepEqual(skipped, { action: "continue" })
+  assert.equal(apiCalls.length, 0)
+
+  modelSelect({ model: { id: "deepseek-v4-flash", provider: "deepseek" } })
+  const processed = await input(withImage(), {})
+  assert.equal(processed.action, "transform")
+  assert.equal(apiCalls.length, 1)
+})
+
+test("P-10 provider blacklist gate: listed provider skipped, others processed", async () => {
+  process.env.VISION_SKIP_PROVIDERS = "grok"
+  const { input, modelSelect } = mkPi()
+
+  modelSelect({ model: { id: "grok-4.6", provider: "grok" } })
+  const skipped = await input(withImage(), {})
+  assert.deepEqual(skipped, { action: "continue" })
+  assert.equal(apiCalls.length, 0)
+
+  modelSelect({ model: { id: "deepseek-v4-pro", provider: "deepseek" } })
+  const processed = await input(withImage(), {})
+  assert.equal(processed.action, "transform")
+  assert.equal(apiCalls.length, 1)
 })

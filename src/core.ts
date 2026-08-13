@@ -96,6 +96,54 @@ export function buildConfig(
 }
 
 // ---------------------------------------------------------------------------
+// Model gate (allowlist / provider blacklist)
+// ---------------------------------------------------------------------------
+
+export interface ModelGate {
+  /** Provider blacklist; only consulted when `enableModels` is empty. */
+  skipProviders: string[]
+  /** Allowlist entries (bare modelID or `provider/model`); empty = every model. */
+  enableModels: string[]
+}
+
+export function parseModelList(raw: string | undefined, fallback: string[] = []): string[] {
+  if (raw === undefined) return fallback
+  if (raw.trim().toLowerCase() === "none") return []
+  return raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+}
+
+export function buildModelGate(env: Record<string, EnvValue> = process.env): ModelGate {
+  return {
+    skipProviders: parseModelList(
+      env.VISION_SKIP_PROVIDERS === undefined ? undefined : String(env.VISION_SKIP_PROVIDERS),
+    ),
+    enableModels: parseModelList(
+      env.VISION_ENABLE_MODELS === undefined ? undefined : String(env.VISION_ENABLE_MODELS),
+    ),
+  }
+}
+
+/** An allowlist entry matches `provider/model` exactly, or a bare modelID with any provider. */
+export function modelMatches(entry: string, modelId: string | undefined): boolean {
+  if (!modelId) return false
+  const id = modelId.toLowerCase()
+  const e = entry.toLowerCase()
+  if (e.includes("/")) return e === id
+  return id === e || id.endsWith(`/${e}`)
+}
+
+/** True when the bridge should process images for `modelId`. Unknown model processes only without an allowlist. */
+export function gateAllows(gate: ModelGate, modelId: string | undefined): boolean {
+  if (gate.enableModels.length > 0) return gate.enableModels.some((entry) => modelMatches(entry, modelId))
+  const provider = modelId?.split("/")[0]
+  if (!provider) return true
+  return !gate.skipProviders.includes(provider)
+}
+
+// ---------------------------------------------------------------------------
 // Vision API call
 // ---------------------------------------------------------------------------
 
@@ -192,6 +240,15 @@ export function hashKey(url: string): string {
   return createHash("sha256").update(url).digest("hex").slice(0, 16)
 }
 
+/**
+ * Cache/in-flight key for one description. The result depends on the question
+ * (full description vs. targeted re-query), so both feed the hash — a cached
+ * full description must never answer a later targeted question.
+ */
+function describeKey(dataUrl: string, question: string): string {
+  return hashKey(`${dataUrl}\n\u0000\n${question}`)
+}
+
 export async function withConcurrency<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
   const results = new Array<T>(tasks.length)
   let next = 0
@@ -243,10 +300,10 @@ export class VisionBridge {
     this.cache = new LRUCache(config.cacheSize)
   }
 
-  /** Describe one image with an explicit question. Cached by content hash. */
+  /** Describe one image with an explicit question. Cached by content hash + question. */
   describeOne(dataUrl: string, question: string): Promise<string | null> {
     if (!dataUrl) return Promise.resolve(null)
-    const key = hashKey(dataUrl)
+    const key = describeKey(dataUrl, question)
     const cached = this.cache.get(key)
     if (cached !== undefined) return Promise.resolve(cached)
     let promise = this.inflight.get(key)

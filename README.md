@@ -70,7 +70,9 @@ cp package.json ~/.pi/agent/extensions/vision-bridge/   # then npm install there
 
 Then `/reload` in pi. Beyond pasted attachments, the pi adapter also detects
 image **file paths** in the input text (e.g. `pi-clipboard-*.png` files) and
-describes them automatically.
+describes them automatically. Model gating works like OpenCode
+(`VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS`): the active model is
+tracked via pi's `model_select` event.
 
 ### Grok
 
@@ -130,7 +132,7 @@ node --experimental-strip-types src/hooks/grok.ts <abs-path> "What is the error 
 Uses the same `VISION_*` env / OpenCode `kimi-for-coding` key as the other
 adapters. The CLI resolves the session model from `GROK_SESSION_ID` /
 `summary.json`, then `~/.grok/config.toml` `[models].default`. Descriptions
-are cached on disk under `$TMPDIR/grok-vision-bridge-cache/`.
+are cached on disk under `$TMPDIR/grok-vision-bridge-cache/`, keyed by file identity + question.
 
 Automatic in-place transcription (OpenCode/pi-style) requires a Grok source
 change — run `transcribe_user_images` for non-vision chat models — not a
@@ -144,8 +146,8 @@ change in this repo.
 | `VISION_MODEL` | `k3-256k` | Vision model id |
 | `VISION_API_KEY` | `kimi-for-coding` key from `~/.local/share/opencode/auth.json` | Explicit override |
 | `VISION_QUESTION` | built-in English prompt | Prompt used for image description |
-| `VISION_ENABLE_MODELS` | _(empty = all models)_ | Comma-separated allowlist. Entries with `/` match `provider/model` exactly; bare entries match modelID regardless of provider |
-| `VISION_SKIP_PROVIDERS` | _(empty = none skipped)_ | Comma-separated provider blacklist, used only when the allowlist is empty |
+| `VISION_ENABLE_MODELS` | _(empty = all models)_ | Comma-separated allowlist (OpenCode / pi; in Grok it replaces the DeepSeek-only default). Entries with `/` match `provider/model` exactly; bare entries match modelID regardless of provider |
+| `VISION_SKIP_PROVIDERS` | _(empty = none skipped)_ | Comma-separated provider blacklist (OpenCode / pi), used only when the allowlist is empty |
 | `VISION_TIMEOUT_MS` | `120000` | Per-request timeout (one retry on 5xx/timeout) |
 | `VISION_MAX_TOKENS` | `2048` | Max tokens for a description |
 | `VISION_MAX_CONCURRENCY` | `3` | Max parallel vision calls |
@@ -190,7 +192,7 @@ detection. All API calls are mocked — the suite runs in under a second.
 - Images in OpenCode messages are `FilePart`s (`type: "file"`, `mime: "image/*"`); there is no dedicated image part type
 - `experimental.chat.messages.transform` receives a **deep copy** of the full history on every request — caching is a hard requirement
 - Images returned by MCP tools live in the tool part's `state.attachments`; they go through the same transform pipeline
-- The core caches by content hash, so identical images across providers/turns cost one vision call
+- The core caches by content hash **+ question**, so the same image with the same question costs one vision call across providers/turns — and a re-query with a different question is never served a stale full description
 - When the chat model handles images natively, leave it alone by configuring `VISION_SKIP_PROVIDERS` or a narrow `VISION_ENABLE_MODELS`
 - Grok TUI: `UserPromptSubmit` payload is `{ prompt }`; hook stdout is parsed only for blocking `PreToolUse` `{ decision, reason }`. `is_cursor_harness()` is `false`, so official `transcribe_user_images` never runs. MCP / chrome-devtools screenshots are inlined as `image_url` the same way pasted images are.
 
