@@ -319,3 +319,35 @@ test("D-14 Config validator: Standard Schema contract, unknown keys and bad shap
   assert.ok(v({ nope: true }).issues.length > 0)
   assert.ok(v("not-an-object").issues.length > 0)
 })
+
+test("D-15 gating follows model switches: session request-header config wins over agent.options", async () => {
+  const { ctx, handlers, addImage, imgBlock, userMessage } = mkCtx()
+  addImage("att-1", PNG)
+  apply(ctx, { allowlist: ["deepseek-v4-flash", "deepseek-v4-pro"] })
+
+  // Agent was created on deepseek-v4-pro, but the session later switched to Kimi.
+  const switchedAgent = {
+    options: { provider: "opencode-go", model: "deepseek-v4-pro" },
+    session: {
+      requestHeader: () => ({ config: { provider: "kimi-code", model: "k3-256k" } }),
+    },
+  }
+  const delegated = { kind: "enter", messages: [] }
+  const next = async () => delegated
+  assert.equal(
+    await handlers["agent/pre-step"](payloadOf([userMessage([imgBlock("att-1")])], switchedAgent), next),
+    delegated,
+    "switched-away model must NOT be bridged",
+  )
+  assert.equal(apiCalls.length, 0)
+
+  // No request-header yet (fresh session): falls back to agent.options.
+  const freshAgent = { options: { provider: "opencode-go", model: "deepseek-v4-pro" } }
+  const messages = [userMessage([imgBlock("att-1")])]
+  const decision = await handlers["agent/pre-step"](payloadOf(messages, freshAgent), async () => ({
+    kind: "enter",
+    messages,
+  }))
+  assert.equal(decision.messages[0].content[0].type, "text")
+  assert.equal(apiCalls.length, 1)
+})

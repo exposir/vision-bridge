@@ -108,9 +108,16 @@ type AttachmentRef = {
 type ContentBlock = { type: string; [key: string]: unknown }
 type UserMessage = { id: unknown; role: string; content: ContentBlock[]; source: unknown }
 
+/**
+ * Resolve the session's ACTIVE model for gating. `agent.options` is fixed at
+ * agent creation and does not follow model switches (session.selectModel),
+ * so prefer the session's latest routed request-header config and fall back
+ * to the agent options — the same precedence DSH's own read_image gate uses.
+ */
 function modelIdOf(agent: any): string | undefined {
-  const provider = agent?.options?.provider
-  const model = agent?.options?.model
+  const routed = agent?.session?.requestHeader?.()?.config
+  const provider = routed?.provider ?? agent?.options?.provider
+  const model = routed?.model ?? agent?.options?.model
   if (typeof provider === "string" && provider && typeof model === "string" && model) {
     return `${provider.toLowerCase()}/${model.toLowerCase()}`
   }
