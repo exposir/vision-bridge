@@ -11,7 +11,7 @@
         │
         ▼
 宿主适配器
-        │  OpenCode / pi（fast path）：
+        │  OpenCode / pi / DeepSeek Harness（fast path）：
         │    视觉模型描述图片，图片被原地替换为文字
         │  Grok（无法拦截）：
         │    宿主保留像素 + `<image_files>` 路径；
@@ -21,11 +21,11 @@
         │  如果描述缺少它需要的细节
         │  （"第 3 行的错误码是什么？"）
         ▼
-re-query（OpenCode `vision` / pi `view_image` / Grok CLI）→
+re-query（OpenCode `vision` / pi `view_image` / DSH `vision` / Grok CLI）→
 视觉模型带着那个具体问题重新审视原图
 ```
 
-- **Fast path**（OpenCode / pi）：一次性摘要，零额外往返
+- **Fast path**（OpenCode / pi / DeepSeek Harness）：一次性摘要，零额外往返
 - **Re-query path**：原图始终可用，模型按需提出针对性问题
 - **Grok**：只有 CLI + skill —— 见 [Grok](#grok)
 
@@ -38,6 +38,7 @@ src/
 ├── hooks/
 │   ├── opencode.ts      # OpenCode 适配器（messages.transform + vision 工具）
 │   ├── pi.ts            # pi 适配器（input 事件 + view_image 工具）
+│   ├── dsh.ts           # DeepSeek Harness 适配器（agent/pre-step + vision 工具）
 │   └── grok.ts          # Grok 适配器（CLI 按需重看；不要装成 hook）
 └── index.ts             # 汇总导出
 dist/
@@ -68,6 +69,35 @@ cp package.json ~/.pi/agent/extensions/vision-bridge/   # 然后在其中 npm in
 ```
 
 之后在 pi 里执行 `/reload`。除粘贴的图片外，pi 适配器还会自动识别输入文本中的图片**文件路径**（如 `pi-clipboard-*.png`）并描述它们。模型门控与 OpenCode 一致（`VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS`）：当前模型通过 pi 的 `model_select` 事件跟踪。
+
+### DeepSeek Harness
+
+原生 Cordis 插件——这是 bridge 迄今最强的宿主：`agent/pre-step` 会在**请求派生之前**改写已领取的用户消息批次，插件系统也是一等公民。
+
+在 `~/.dsh/cordis.patch.yml`（机器级用户层；运行中的 `dsh` 进程会热加载修改——无需重启）里做两处修改：
+
+```yaml
+# 1. 挂载插件。
+- insert:
+    - id: vision-bridge
+      name: /ABS/PATH/TO/vision-bridge/src/hooks/dsh.ts
+```
+
+```yaml
+# 2. 让网关准入图片。DSH 的 session.prompt 准入会在路由模型未声明
+#    image 输入时直接拒绝图片 part——这一步发生在任何插件看到消息之前。
+#    给被桥接的模型声明 image 输入；插件会在请求派生前把图片改写为文本，
+#    提供商永远收不到像素。
+- id: llm-pi-ai
+  config:
+    providers:
+      <你的 provider>:
+        models:
+          - id: <你的纯文本模型>
+            input: [text, image]   # 加这一行
+```
+
+之后粘贴 / 附带的图片会被原地替换为 `[Image N]` 描述；原始字节仍保存在 DSH 的持久化附件存储中，提示语会告知模型可以用注册的 `vision` 工具、凭给出的 `attachment_id` 按需重看原图。嵌套在工具结果里的截图同样被处理，`read_image` 工具产生的图片也会在下一步被描述。环境变量 / `kimi-for-coding` key 与其他适配器一致；`agent.options.provider/model` 驱动同一套 `VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS` 门控。
 
 ### Grok
 

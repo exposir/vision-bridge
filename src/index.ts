@@ -29,6 +29,7 @@ export {
 export type { BridgeConfig, ImageSource, DescribeResult, KeyProvider, ModelGate } from "./core.ts"
 export { default as opencodePlugin } from "./hooks/opencode.ts"
 export { default as piExtension } from "./hooks/pi.ts"
+export { apply as dshApply, name as dshName, inject as dshInject } from "./hooks/dsh.ts"
 export {
   isDeepSeekFamily,
   shouldDescribeGrok,

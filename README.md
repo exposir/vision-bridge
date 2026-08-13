@@ -11,7 +11,7 @@ you attach / screenshot an image
         │
         ▼
 host adapter
-        │  OpenCode / pi (fast path):
+        │  OpenCode / pi / DeepSeek Harness (fast path):
         │    vision model describes the image; the image is
         │    replaced in place with text
         │  Grok (no intercept):
@@ -22,11 +22,11 @@ chat model (e.g. DeepSeek) answers from prose
         │  if the description misses a detail it needs
         │  ("what's the error code on line 3?")
         ▼
-re-query (OpenCode `vision` / pi `view_image` / Grok CLI) →
+re-query (OpenCode `vision` / pi `view_image` / DSH `vision` / Grok CLI) →
 vision model re-examines the original with that question
 ```
 
-- **Fast path** (OpenCode / pi): one-shot summary, zero extra round-trips
+- **Fast path** (OpenCode / pi / DeepSeek Harness): one-shot summary, zero extra round-trips
 - **Re-query path**: the original image stays available; the model asks targeted questions on demand
 - **Grok**: CLI + skill only — see [Grok](#grok)
 
@@ -39,6 +39,7 @@ src/
 ├── hooks/
 │   ├── opencode.ts      # OpenCode adapter (messages.transform + vision tool)
 │   ├── pi.ts            # pi adapter (input event + view_image tool)
+│   ├── dsh.ts           # DeepSeek Harness adapter (agent/pre-step + vision tool)
 │   └── grok.ts          # Grok adapter (CLI re-query; do not install as a hook)
 └── index.ts             # re-exports
 dist/
@@ -73,6 +74,46 @@ image **file paths** in the input text (e.g. `pi-clipboard-*.png` files) and
 describes them automatically. Model gating works like OpenCode
 (`VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS`): the active model is
 tracked via pi's `model_select` event.
+
+### DeepSeek Harness
+
+A native Cordis plugin — the strongest host the bridge has: `agent/pre-step`
+rewrites the claimed user-message batch **before request derivation**, and the
+plugin system is first-class.
+
+Two edits in `~/.dsh/cordis.patch.yml` (the machine-local user layer; the
+running `dsh` process hot-reloads edits — no restart needed):
+
+```yaml
+# 1. Mount the plugin.
+- insert:
+    - id: vision-bridge
+      name: /ABS/PATH/TO/vision-bridge/src/hooks/dsh.ts
+```
+
+```yaml
+# 2. Admit images at the gateway. DSH's session.prompt admission rejects
+#    image parts when the routed model does not declare image input — before
+#    any plugin can see them. Declare image input on the bridged models; the
+#    plugin rewrites images to text before request derivation, so the
+#    provider never receives pixels.
+- id: llm-pi-ai
+  config:
+    providers:
+      <your-provider>:
+        models:
+          - id: <your-text-only-model>
+            input: [text, image]   # add this line
+```
+
+Pasted / attached images are then replaced in place with `[Image N]`
+descriptions; the original bytes stay in DSH's durable attachment store and
+the hint tells the model it can re-query via the registered `vision` tool
+using the shown `attachment_id`. Screenshots nested inside tool results are
+handled the same way, and `read_image` tool results are described on the next
+step. Uses the same `VISION_*` env / `kimi-for-coding` key as the other
+adapters. `agent.options.provider/model` drives the same
+`VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS` gate.
 
 ### Grok
 
