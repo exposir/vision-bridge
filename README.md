@@ -121,8 +121,10 @@ the hint tells the model it can re-query via the registered `vision` tool
 using the shown `attachment_id`. Screenshots nested inside tool results are
 handled the same way, and `read_image` tool results are described on the next
 step. Uses the same `VISION_*` env / `kimi-for-coding` key as the other
-adapters. `agent.options.provider/model` drives the same
-`VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS` gate.
+adapters. Gating matches the session's ACTIVE model — the latest routed
+request-header config, falling back to `agent.options` — so a session
+switched away from the allowlist stops being bridged immediately.
+
 ### Grok
 
 Grok Build's TUI has **no** `messages.transform`. A pasted image is saved under
