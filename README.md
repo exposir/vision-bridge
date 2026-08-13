@@ -115,6 +115,14 @@ is bridged (same default as the OpenCode / pi adapters).
             input: [text, image]   # add this line
 ```
 
+**Hot-reloading the plugin code**: config edits hot-reload, but a changed
+plugin MODULE is only re-imported when its entry `name` changes. After
+editing `dsh.ts`, bump a query suffix on the entry to force the reload:
+
+```yaml
+      name: /ABS/PATH/TO/vision-bridge/src/hooks/dsh.ts?v=2   # bump on each code change
+```
+
 Pasted / attached images are then replaced in place with `[Image N]`
 descriptions; the original bytes stay in DSH's durable attachment store and
 the hint tells the model it can re-query via the registered `vision` tool

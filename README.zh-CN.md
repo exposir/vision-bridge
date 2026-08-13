@@ -104,6 +104,12 @@ cp package.json ~/.pi/agent/extensions/vision-bridge/   # 然后在其中 npm in
             input: [text, image]   # 加这一行
 ```
 
+**插件代码热更新**：配置热加载只重载配置；插件**模块**只有在条目 `name` 变化时才会被重新 import。改完 `dsh.ts` 后，给 name 加个 query 后缀强制重载：
+
+```yaml
+      name: /ABS/PATH/TO/vision-bridge/src/hooks/dsh.ts?v=2   # 每次改代码递增
+```
+
 之后粘贴 / 附带的图片会被原地替换为 `[Image N]` 描述；原始字节仍保存在 DSH 的持久化附件存储中，提示语会告知模型可以用注册的 `vision` 工具、凭给出的 `attachment_id` 按需重看原图。嵌套在工具结果里的截图同样被处理，`read_image` 工具产生的图片也会在下一步被描述。环境变量 / `kimi-for-coding` key 与其他适配器一致；门控按会话的**当前生效模型**匹配——优先取最近一次路由的 request-header 配置、回落到 `agent.options`，因此会话中途切走模型后会立即停止桥接。门控优先级：环境变量（`VISION_ENABLE_MODELS` / `VISION_SKIP_PROVIDERS`）> 插件 `config` > 全量桥接。
 
 ### Grok
