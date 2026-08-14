@@ -421,3 +421,76 @@ test("D-17 the model recorded at assembly wins over a stale request-header (mode
   )
   assert.equal(apiCalls.length, 1)
 })
+
+test("D-18 tool results: read_image-style image blocks are rewritten at post-execute", async () => {
+  const { ctx, handlers, tools, addImage, imgBlock } = mkCtx()
+  addImage("att-tool", PNG)
+  apply(ctx, { allowlist: ["deepseek-v4-flash"] })
+
+  const agent = { options: { provider: "opencode-go", model: "deepseek-v4-flash" } }
+  await fireAssemble(handlers, agent, "opencode-go", "deepseek-v4-flash")
+
+  const resultContent = [
+    { type: "text", text: "<path>/tmp/shot.png</path>" },
+    imgBlock("att-tool"),
+  ]
+  const decision = await handlers["tools/post-execute"](
+    { agent, signal: undefined, name: "read_image" },
+    { content: resultContent, isError: false },
+    async () => ({ kind: "accept" }),
+  )
+
+  assert.equal(decision.kind, "accept")
+  const replaced = decision.content
+  assert.equal(replaced[0].type, "text", "envelope text preserved")
+  assert.equal(replaced[1].type, "text", "tool-result image rewritten")
+  assert.match(replaced[1].text, /^\[Image 1\]\nMOCK-DESC#1/)
+  assert.match(replaced[1].text, /Original image: att-tool/)
+  assert.equal(apiCalls.length, 1)
+
+  // The rewritten ref is remembered, so the vision re-query tool can use it.
+  const vision = tools.find((t) => t.name === "vision")
+  assert.ok(vision, "vision tool registered")
+  const before = apiCalls.length
+  const answer = await vision.execute({ attachment_id: "att-tool", question: "q" }, {})
+  assert.match(answer, /MOCK-DESC/)
+  assert.equal(apiCalls.length, before + 1)
+})
+
+test("D-19 tool results: gated-out models and image-free results pass through untouched", async () => {
+  const { ctx, handlers, addImage, imgBlock } = mkCtx()
+  addImage("att-tool", PNG)
+  apply(ctx, { allowlist: ["deepseek-v4-flash"] })
+
+  // A downstream accept decision carries content (like the registry's folded decision).
+  const acceptWith = (content) => async () => ({ kind: "accept", content })
+
+  // Grok model: gate rejects before any vision call.
+  const grokAgent = { options: { provider: "xai", model: "grok-4.6" } }
+  const grokContent = [{ type: "text", text: "x" }, imgBlock("att-tool")]
+  const grokDecision = await handlers["tools/post-execute"](
+    { agent: grokAgent, signal: undefined, name: "read_image" },
+    { content: grokContent, isError: false },
+    acceptWith(grokContent),
+  )
+  assert.equal(grokDecision.content[1].type, "image", "grok tool-result image stays")
+  assert.equal(apiCalls.length, 0)
+
+  // No image in the result: pass through.
+  const dsAgent = { options: { provider: "opencode-go", model: "deepseek-v4-flash" } }
+  const plain = await handlers["tools/post-execute"](
+    { agent: dsAgent, signal: undefined, name: "bash" },
+    { content: [{ type: "text", text: "hello" }], isError: false },
+    acceptWith([{ type: "text", text: "hello" }]),
+  )
+  assert.equal(plain.content[0].text, "hello")
+
+  // Blocked decisions are never touched.
+  const blocked = await handlers["tools/post-execute"](
+    { agent: dsAgent, signal: undefined, name: "bash" },
+    { content: [{ type: "text", text: "x" }, imgBlock("att-tool")], isError: false },
+    async () => ({ kind: "block", feedback: [{ type: "text", text: "no" }] }),
+  )
+  assert.equal(blocked.kind, "block")
+  assert.equal(apiCalls.length, 0)
+})

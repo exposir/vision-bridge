@@ -266,6 +266,38 @@ export function apply(ctx: any, config?: DshConfig) {
     }
   }
 
+  /** Describe every image in one content array; returns the replaced array, or null when nothing changed. */
+  const describeContentImages = async (
+    content: any[],
+    context: string,
+    signal?: AbortSignal,
+  ): Promise<any[] | null> => {
+    const hits = collectHits(content)
+    if (hits.length === 0) return null
+    const sources = []
+    for (const hit of hits) {
+      remember(hit.ref)
+      const dataUrl = await dataUrlOf(ctx, hit.ref, signal)
+      sources.push({ dataUrl, context })
+    }
+    const results = await bridge.describeAll(
+      sources,
+      (_source, i) => {
+        return `(Original image: ${hits[i].ref.attachmentId} — if the description above misses details you need, call the vision tool with this attachment_id and your specific question.)`
+      },
+      signal,
+    )
+    const replacements = new Map<string, ContentBlock>()
+    hits.forEach((hit, i) => {
+      const r = results[i]
+      const text = `${r?.text ?? "[Image unavailable]"}${
+        r?.hint ? `\n${r.hint}` : ""
+      }`
+      replacements.set(hit.path.join(","), { type: "text", text })
+    })
+    return applyReplacements(content, [], replacements)
+  }
+
   // ── fast path: rewrite image blocks before the request is derived ─────────
   ctx.on("agent/pre-step", async (payload: any, next: () => Promise<any>): Promise<any> => {
     const messages: UserMessage[] | undefined = payload?.messages
@@ -343,6 +375,27 @@ export function apply(ctx: any, config?: DshConfig) {
       if (delegated) throw error
       log("warn", "pre-step rewrite failed, images left untouched", String(error))
       return next()
+    }
+  })
+
+  // ── tool results: images returned by tools (e.g. read_image, screenshot
+  //    tools) never pass through pre-step — the tool-result message enters
+  //    the durable history directly and would ride every later request as an
+  //    image_url a text-only gateway rejects. Rewrite them here instead. ─────
+  ctx.on("tools/post-execute", async (exec: any, result: any, next: () => Promise<any>): Promise<any> => {
+    const decision = await next()
+    if (decision?.kind !== "accept") return decision
+    const content: any[] | undefined = decision.content ?? result?.content
+    if (!Array.isArray(content)) return decision
+    if (collectHits(content).length === 0) return decision
+    if (!gateAllows(gate, modelIdOf(exec?.agent, modelByAgent))) return decision
+    try {
+      const replaced = await describeContentImages(content, exec?.signal)
+      if (replaced === null) return decision
+      return { ...decision, content: replaced }
+    } catch (error) {
+      log("warn", "post-execute image rewrite failed, tool result left untouched", String(error))
+      return decision
     }
   })
 
