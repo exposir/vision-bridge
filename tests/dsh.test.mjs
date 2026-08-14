@@ -43,6 +43,24 @@ function payloadOf(messages, agent = agentOf()) {
   return { agent, messages, turn: 1, step: 1, signal: undefined }
 }
 
+/** Simulate DSH's system-prompt assembly, which runs before every pre-step and
+ *  carries the process-local model selection in variables (injected by DSH's
+ *  own installModelSelection listener). */
+async function fireAssemble(handlers, agent, provider, model) {
+  const h = handlers["system-prompt/assemble"]
+  if (!h) return
+  await h(
+    { sections: [], contexts: [], tools: [], variables: {} },
+    { agent, scope: agent },
+    async () => ({
+      sections: [],
+      contexts: [],
+      tools: [],
+      variables: { provider, model },
+    }),
+  )
+}
+
 beforeEach(() => {
   resetMocks()
   for (const k of Object.keys(process.env)) {
@@ -365,4 +383,41 @@ test("D-16 downstream listener failure propagates and next() runs exactly once",
   }
   await assert.rejects(handlers["agent/pre-step"](payloadOf(messages), next), /downstream boom/)
   assert.equal(calls, 1, "next() must not be re-invoked after a downstream throw")
+})
+
+test("D-17 the model recorded at assembly wins over a stale request-header (model-switch window)", async () => {
+  const { ctx, handlers, addImage, imgBlock, userMessage } = mkCtx()
+  addImage("att-1", PNG)
+  apply(ctx, { allowlist: ["deepseek-v4-flash"] })
+
+  // Session ran its first turn on grok (stale request-header), then the user
+  // switched to deepseek-v4-flash — the assembly carries the NEW selection.
+  const agent = {
+    options: { provider: "xai", model: "grok-4.6" },
+    session: {
+      requestHeader: () => ({ config: { provider: "xai", model: "grok-4.6" } }),
+    },
+  }
+  await fireAssemble(handlers, agent, "opencode-go", "deepseek-v4-flash")
+
+  const messages = [userMessage([imgBlock("att-1")])]
+  const decision = await handlers["agent/pre-step"](payloadOf(messages, agent), async () => ({
+    kind: "enter",
+    messages,
+  }))
+  assert.equal(decision.messages[0].content[0].type, "text", "assembly selection must drive the gate")
+  assert.equal(apiCalls.length, 1)
+
+  // Without an assembly record, the stale grok header would keep the image.
+  const { ctx: ctx2, handlers: h2, addImage: add2, imgBlock: ib2, userMessage: um2 } = mkCtx()
+  add2("att-2", PNG)
+  apply(ctx2, { allowlist: ["deepseek-v4-flash"] })
+  const delegated = { kind: "enter", messages: [] }
+  const next = async () => delegated
+  assert.equal(
+    await h2["agent/pre-step"](payloadOf([um2([ib2("att-2")])], agent), next),
+    delegated,
+    "stale header alone must still skip (grok not allowed)",
+  )
+  assert.equal(apiCalls.length, 1)
 })

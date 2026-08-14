@@ -109,12 +109,17 @@ type ContentBlock = { type: string; [key: string]: unknown }
 type UserMessage = { id: unknown; role: string; content: ContentBlock[]; source: unknown }
 
 /**
- * Resolve the session's ACTIVE model for gating. `agent.options` is fixed at
- * agent creation and does not follow model switches (session.selectModel),
- * so prefer the session's latest routed request-header config and fall back
- * to the agent options — the same precedence DSH's own read_image gate uses.
+ * Resolve the session's ACTIVE model for gating. Priority:
+ *   1. the model recorded from system-prompt assembly (process-local
+ *      selection — follows mid-session model switches immediately);
+ *   2. the session's latest routed request-header config;
+ *   3. the agent options fixed at agent creation.
+ * Mirrors the precedence DSH's own read_image gate uses, with the assembly
+ * record fixing the switch-then-first-request window.
  */
-function modelIdOf(agent: any): string | undefined {
+function modelIdOf(agent: any, known: Map<object, string>): string | undefined {
+  const tracked = agent ? known.get(agent) : undefined
+  if (tracked) return tracked
   const routed = agent?.session?.requestHeader?.()?.config
   const provider = routed?.provider ?? agent?.options?.provider
   const model = routed?.model ?? agent?.options?.model
@@ -211,6 +216,28 @@ export function apply(ctx: any, config?: DshConfig) {
     }
   }
 
+  // Track each agent's ACTIVE model. `agent.options` is fixed at agent
+  // creation and `session.requestHeader()` reflects the LAST request — both
+  // go stale the moment the user switches models mid-session. The system
+  // prompt assembly runs before every pre-step and carries the process-local
+  // selection (the same source DSH's own model-selection plugin injects into
+  // assembled.variables), so record it here and gate on it.
+  const modelByAgent = new WeakMap<object, string>()
+  ctx.on("system-prompt/assemble", async (_assembly: any, context: any, next: () => Promise<any>) => {
+    const assembled = await next()
+    const agent = context?.agent ?? context?.scope
+    const provider = assembled?.variables?.provider
+    const model = assembled?.variables?.model
+    if (
+      agent &&
+      typeof provider === "string" && provider &&
+      typeof model === "string" && model
+    ) {
+      modelByAgent.set(agent, `${provider.toLowerCase()}/${model.toLowerCase()}`)
+    }
+    return assembled
+  })
+
   const log = (level: "info" | "warn", message: string, extra?: unknown) => {
     try {
       const logger = ctx?.logger
@@ -243,7 +270,7 @@ export function apply(ctx: any, config?: DshConfig) {
   ctx.on("agent/pre-step", async (payload: any, next: () => Promise<any>): Promise<any> => {
     const messages: UserMessage[] | undefined = payload?.messages
     if (!Array.isArray(messages) || messages.length === 0) return next()
-    if (!gateAllows(gate, modelIdOf(payload?.agent))) return next()
+    if (!gateAllows(gate, modelIdOf(payload?.agent, modelByAgent))) return next()
 
     const hitsPerMessage = new Map<UserMessage, Hit[]>()
     for (const message of messages) {
